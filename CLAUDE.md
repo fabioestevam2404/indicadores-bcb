@@ -12,6 +12,9 @@ Python 3.11+, httpx, pandas, DuckDB, pytest, ruff.
 - Tarefas independentes (ex.: test-writer e doc-writer) podem ser delegadas
   juntas, para rodar em paralelo.
 - Ao final de cada etapa, reporte o resultado antes de seguir para a próxima.
+- Use apenas os subagentes do projeto (spec-writer, implementer, test-writer,
+  code-reviewer, doc-writer). Não delegue a agentes globais como bcb-ingestion
+  ou etl-transformer: eles são de outro projeto e usam outra stack.
 
 ## Regras
 - Toda função nova tem teste em pytest. Testes não acessam a internet (usar mocks).
