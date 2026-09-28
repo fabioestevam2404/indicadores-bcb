@@ -5,7 +5,6 @@ Pipeline local que busca séries do SGS/Banco Central, limpa os dados e grava em
 - **Commit:** `2a6fbb8` na `main`. Não foi enviado para o repositório remoto, e não foi verificado se existe um remote configurado.
 - **Qualidade:** 106 testes passando, cobertura de 99% e `ruff check .` sem problemas. Nenhum teste acessa a rede.
 - **Execução real:** o pipeline rodou contra a API do BCB em 28/09/2026. A primeira execução gravou 3.142 linhas. A segunda atualizou as mesmas 3.142 sem inserir nenhuma, confirmando que rodar de novo não duplica dados.
-- **Pendência no git:** o `CLAUDE.md` tem uma alteração ainda não commitada, a regra de usar só os subagentes do projeto.
 
 ## Como rodar
 ```powershell
