@@ -296,6 +296,10 @@ ruff check .
 
 Testes usam `httpx.MockTransport` e não acessam a internet. Nenhuma espera real é feita nos testes de retry (a função `esperar` é substituída por um no-op).
 
+### CI
+
+O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a cada push e pull request na `main`, em Ubuntu e Windows com Python 3.11: `ruff check .`, `pytest` com cobertura mínima de 80% (`--cov-fail-under=80`) e `python -m indicadores --help`. O CI nunca acessa a API do BCB.
+
 ## Estrutura do repositório
 
 ```
@@ -324,6 +328,7 @@ Testes usam `httpx.MockTransport` e não acessam a internet. Nenhuma espera real
 │   └── indicadores.duckdb           # Arquivo de banco (ignorado pelo git)
 ├── requirements.txt                 # Dependências de execução (versões fixas)
 ├── requirements-dev.txt             # + pytest, pytest-cov, ruff
+├── .github/workflows/ci.yml         # CI: lint, testes e cobertura
 ├── pyproject.toml
 └── README.md
 ```

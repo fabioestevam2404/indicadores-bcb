@@ -56,6 +56,6 @@ Python 3.11.7 e venv em `.venv`. As versões são fixas: `requirements.txt` tem 
 - O commit é feito pelo usuário.
 
 ## Próximos passos sugeridos
-1. **CI no GitHub Actions**, rodando ruff e pytest, com cobertura mínima de 80%. O repositório está em https://github.com/fabioestevam2404/indicadores-bcb.
+1. **Conferir o primeiro run do CI.** O workflow `.github/workflows/ci.yml` roda ruff, pytest (cobertura mínima de 80%) e `python -m indicadores --help` em Ubuntu e Windows, a cada push e pull request na `main`. Repositório: https://github.com/fabioestevam2404/indicadores-bcb.
 2. **Módulo de análise.** Três ideias: datas em que a Selic mudou, IPCA acumulado em 12 meses e PTAX mensal.
 3. **Agendar a execução diária** no Agendador de Tarefas do Windows.
