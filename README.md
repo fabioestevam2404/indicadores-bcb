@@ -114,6 +114,84 @@ Os logs são emitidos em stderr no formato `NIVEL logger: mensagem`.
 - **Execuções simultâneas**: não rode duas instâncias apontando para o mesmo `--banco` ao mesmo tempo — a segunda falha ao abrir o arquivo (bloqueado) com exit code 3. Reexecução sequencial é segura, graças ao upsert.
 - **Transação por série**: a gravação faz uma transação para cada série, não uma única transação para o batch inteiro; um erro numa série não desfaz as anteriores já commitadas.
 
+## Agendamento diário (Windows)
+
+A tarefa agendada `indicadores-bcb diario` executa automaticamente de segunda a sexta às 19:00. Se o PC estava desligado no horário, roda assim que possível após o logon. Nunca executa duas vezes ao mesmo tempo e tem limite de 30 minutos por execução.
+
+### Registrar a tarefa
+
+A partir da raiz do repositório:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\agendar_tarefa.ps1
+```
+
+Não requer privilégios de administrador. Rodar de novo só atualiza a tarefa existente (é idempotente).
+
+### Remover a tarefa
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\agendar_tarefa.ps1 -Remover
+```
+
+### Rodar manualmente o fluxo da tarefa
+
+Para testar o wrapper (com log):
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\executar_diario.ps1
+```
+
+Argumentos extras são repassados para `python -m indicadores`, ex.:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\executar_diario.ps1 --series 432 -v
+```
+
+### Logs
+
+As execuções são registradas em `logs/execucao_AAAA-MM.log` (um arquivo por mês, em UTF-8 sem BOM). Cada execução grava um cabeçalho de início, o resumo (stdout), os logs (stderr) e um rodapé com o exit code. O diretório `logs/` é criado automaticamente e é ignorado pelo git (sem rotação automática).
+
+Exemplo de conteúdo:
+
+```
+===== 2026-09-28 19:00:15 - início =====
+
+--- stdout ---
+Séries gravadas:
+  432 (selic_meta): 0 inseridos, 20 atualizados
+...
+
+--- stderr ---
+INFO indicadores.pipeline: executar iniciado
+...
+
+===== 2026-09-28 19:00:22 - fim (exit code: 0) =====
+```
+
+### Exit codes do wrapper
+
+| Código | Situação |
+|--------|----------|
+| 0–3 | Repassado da CLI (mesmos códigos de `python -m indicadores`) |
+| 10 | venv não encontrado (`.venv\Scripts\python.exe` ausente) |
+| 11 | Falha ao iniciar o Python |
+| 12 | Falha ao preparar o log (criar diretório ou gravar cabeçalho); mensagem vai para stderr |
+
+### Conferir status
+
+Abra o Agendador de Tarefas do Windows ou execute:
+
+```powershell
+Get-ScheduledTaskInfo -TaskName "indicadores-bcb diario"
+```
+
+Mostra a última execução, o resultado e a próxima execução.
+
+### Observação
+
+Uma janela do PowerShell pode piscar por um instante no horário da execução — é comportamento normal do Windows quando a tarefa roda com a sessão do usuário logado. Um encerramento forçado pelo limite de 30 minutos pode deixar arquivos temporários em `%TEMP%`.
+
 ## Uso programático
 
 Para usar os módulos diretamente em Python:
@@ -294,7 +372,7 @@ pytest --cov=indicadores --cov-report=term-missing
 ruff check .
 ```
 
-Testes usam `httpx.MockTransport` e não acessam a internet. Nenhuma espera real é feita nos testes de retry (a função `esperar` é substituída por um no-op).
+Testes usam `httpx.MockTransport` e não acessam a internet. Nenhuma espera real é feita nos testes de retry (a função `esperar` é substituída por um no-op). O arquivo `test_scripts.py` só roda no Windows (PowerShell/Agendador) e é pulado no CI Linux.
 
 ### CI
 
@@ -312,20 +390,27 @@ O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a c
 │       ├── limpeza.py               # Módulo de limpeza e tipagem
 │       ├── persistencia.py          # Módulo de persistência em DuckDB
 │       └── pipeline.py              # Orquestração do pipeline
+├── scripts/
+│   ├── executar_diario.ps1          # Wrapper da tarefa agendada
+│   └── agendar_tarefa.ps1           # Registra/remove a tarefa no Agendador
 ├── tests/
 │   ├── __init__.py
 │   ├── test_extracao.py             # Testes de extração
 │   ├── test_limpeza.py              # Testes de limpeza
 │   ├── test_persistencia.py         # Testes de persistência
 │   ├── test_pipeline.py             # Testes de orquestração
-│   └── test_main.py                 # Testes da CLI
+│   ├── test_main.py                 # Testes da CLI
+│   └── test_scripts.py              # Testes dos scripts PS (só Windows)
 ├── specs/
 │   ├── extracao.md                  # Especificação de extração
 │   ├── limpeza.md                   # Especificação de limpeza
 │   ├── persistencia.md              # Especificação de persistência
-│   └── pipeline.md                  # Especificação do pipeline
+│   ├── pipeline.md                  # Especificação do pipeline
+│   └── agendamento.md               # Especificação do agendamento
 ├── dados/                           # Diretório criado automaticamente
 │   └── indicadores.duckdb           # Arquivo de banco (ignorado pelo git)
+├── logs/                            # Diretório de logs (ignorado pelo git)
+│   └── execucao_YYYY-MM.log         # Logs mensais da tarefa agendada
 ├── requirements.txt                 # Dependências de execução (versões fixas)
 ├── requirements-dev.txt             # + pytest, pytest-cov, ruff
 ├── .github/workflows/ci.yml         # CI: lint, testes e cobertura
@@ -339,3 +424,4 @@ O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a c
 - [x] Limpeza e tipagem (conversão de valores, datas datetime64[ns])
 - [x] Persistência em DuckDB (`abrir_conexao`, `criar_tabela`, `gravar`, `ler`)
 - [x] Script de execução de ponta a ponta (`python -m indicadores`)
+- [x] Agendamento diário (Agendador do Windows)
