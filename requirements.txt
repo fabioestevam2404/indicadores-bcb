@@ -1,0 +1,6 @@
+httpx
+pytest
+pytest-cov
+ruff
+pandas
+duckdb
