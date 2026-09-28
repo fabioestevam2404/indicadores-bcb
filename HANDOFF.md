@@ -47,7 +47,7 @@ Cada módulo tem uma spec em `specs/`, e as specs são a referência para qualqu
 - **Log duplicado:** se `main()` for chamado de dentro de uma aplicação que já configurou o próprio log, as mensagens podem sair duplicadas. Na linha de comando isso não acontece.
 
 ## Ambiente
-Python 3.11.7 e venv em `.venv`, com httpx 0.28.1, pandas 3.0.6, duckdb 1.5.6, pytest 9.1.1, pytest-cov e ruff 0.16.9. O projeto usa o layout `src/`, e o `pyproject.toml` só configura o pytest. O `.gitignore` ignora `*.duckdb` e `.coverage`.
+Python 3.11.7 e venv em `.venv`. As versões são fixas: `requirements.txt` tem httpx 0.28.1, pandas 3.0.6 e duckdb 1.5.6; `requirements-dev.txt` inclui esse arquivo e acrescenta pytest 9.1.1, pytest-cov 7.1.0 e ruff 0.16.9. Instale com `pip install -r requirements-dev.txt`. O projeto usa o layout `src/`, e o `pyproject.toml` só configura o pytest. O `.gitignore` ignora `*.duckdb` e `.coverage`.
 
 ## Forma de trabalho (definida no CLAUDE.md)
 - A sessão principal só coordena e não edita código. O fluxo é spec-writer → implementer → test-writer → code-reviewer → doc-writer.
@@ -56,7 +56,6 @@ Python 3.11.7 e venv em `.venv`, com httpx 0.28.1, pandas 3.0.6, duckdb 1.5.6, p
 - O commit é feito pelo usuário.
 
 ## Próximos passos sugeridos
-1. **Fixar as versões no `requirements.txt`.** Hoje ele lista só os nomes dos pacotes, e uma versão nova de pandas ou duckdb pode quebrar o pipeline.
-2. **CI no GitHub Actions**, rodando ruff e pytest, com cobertura mínima de 80%.
-3. **Módulo de análise.** Três ideias: datas em que a Selic mudou, IPCA acumulado em 12 meses e PTAX mensal.
-4. **Agendar a execução diária** no Agendador de Tarefas do Windows.
+1. **CI no GitHub Actions**, rodando ruff e pytest, com cobertura mínima de 80%. O repositório está em https://github.com/fabioestevam2404/indicadores-bcb.
+2. **Módulo de análise.** Três ideias: datas em que a Selic mudou, IPCA acumulado em 12 meses e PTAX mensal.
+3. **Agendar a execução diária** no Agendador de Tarefas do Windows.

@@ -22,14 +22,16 @@ Período: últimos 5 anos a partir da data de referência (data atual no fuso de
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install -r requirements-dev.txt
 ```
 
 ### Linux / macOS
 
 ```bash
-python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+python -m venv .venv && source .venv/bin/activate && pip install -r requirements-dev.txt
 ```
+
+As versões são fixas. `requirements.txt` tem só o necessário para rodar o pipeline (httpx, pandas, duckdb); `requirements-dev.txt` inclui esse arquivo e acrescenta pytest, pytest-cov e ruff. Para só executar o pipeline, sem testes, basta `requirements.txt`.
 
 ## Execução
 
@@ -320,7 +322,8 @@ Testes usam `httpx.MockTransport` e não acessam a internet. Nenhuma espera real
 │   └── pipeline.md                  # Especificação do pipeline
 ├── dados/                           # Diretório criado automaticamente
 │   └── indicadores.duckdb           # Arquivo de banco (ignorado pelo git)
-├── requirements.txt
+├── requirements.txt                 # Dependências de execução (versões fixas)
+├── requirements-dev.txt             # + pytest, pytest-cov, ruff
 ├── pyproject.toml
 └── README.md
 ```
