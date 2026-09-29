@@ -1,6 +1,6 @@
 # indicadores-bcb
 
-Pipeline local que coleta séries do SGS/Banco Central, limpa e grava em DuckDB. Implementa **extração**, **limpeza** e **persistência em DuckDB**.
+Pipeline local que coleta séries do SGS/Banco Central, limpa, grava em DuckDB e oferece análises de negócio. Implementa **extração**, **limpeza**, **persistência em DuckDB** e **análises**.
 
 ## Stack
 
@@ -344,6 +344,37 @@ resultado = con.execute("""
 print(resultado)
 ```
 
+### Análises
+
+Três análises de negócio sobre os dados persistidos:
+
+```python
+from indicadores.persistencia import abrir_conexao, ler
+from indicadores.analise import mudancas_selic, ipca_acumulado_12m, ptax_mensal
+
+con = duckdb.connect("dados/indicadores.duckdb", read_only=True)
+dados = ler(con)
+
+selic = mudancas_selic(dados)        # datas e magnitude das mudanças
+ipca = ipca_acumulado_12m(dados)     # IPCA acumulado em 12 meses
+ptax = ptax_mensal(dados)            # PTAX agregada por mês
+
+con.close()
+```
+
+As funções aceitam o DataFrame de `ler` ou de `limpar.dados` e devolvem DataFrames com `dtypes` explícitos. Série ausente devolve DataFrame vazio com as colunas corretas. Colunas mínimas (`codigo`, `data`, `valor`) faltando levantam `ErroAnalise`.
+
+| Análise | Colunas de saída | Regra de cálculo |
+|---------|-----------------|-----------------|
+| **Mudanças Selic** | `data`, `valor_anterior`, `valor_novo`, `variacao_pp` | Datas em que a meta (432) mudou; primeira observação não entra; `variacao_pp = valor_novo - valor_anterior` |
+| **IPCA 12m** | `data`, `ipca_mensal`, `acumulado_12m` | Acumulado móvel de 12 meses consecutivos (sem lacuna, verificado por mês civil); fórmula: `(prod(1 + v/100) - 1) * 100`; sem arredondamento |
+| **PTAX Mensal** | `mes`, `media`, `fechamento`, `minimo`, `maximo`, `dias_com_dado` | Agregação diária da PTAX (1) por mês civil; `fechamento` é do último dia com dado do mês; `dias_com_dado` sinaliza mês incompleto |
+
+**Observações:**
+- Funções são puras: mesma entrada sempre produz mesma saída.
+- Trabalham com dados já limpos (sem duplicação por `(codigo, data)`); não reimplemen tam essa deduplicação.
+- Ordenadas internamente por data/período, nunca dependem da ordem de entrada.
+
 ## Erros e retry (extração)
 
 | Exceção | Causa | Retry? | Detalhes |
@@ -389,7 +420,8 @@ O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a c
 │       ├── extracao.py              # Módulo de extração
 │       ├── limpeza.py               # Módulo de limpeza e tipagem
 │       ├── persistencia.py          # Módulo de persistência em DuckDB
-│       └── pipeline.py              # Orquestração do pipeline
+│       ├── pipeline.py              # Orquestração do pipeline
+│       └── analise.py               # Análises de negócio
 ├── scripts/
 │   ├── executar_diario.ps1          # Wrapper da tarefa agendada
 │   └── agendar_tarefa.ps1           # Registra/remove a tarefa no Agendador
@@ -400,13 +432,15 @@ O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a c
 │   ├── test_persistencia.py         # Testes de persistência
 │   ├── test_pipeline.py             # Testes de orquestração
 │   ├── test_main.py                 # Testes da CLI
-│   └── test_scripts.py              # Testes dos scripts PS (só Windows)
+│   ├── test_scripts.py              # Testes dos scripts PS (só Windows)
+│   └── test_analise.py              # Testes de análises
 ├── specs/
 │   ├── extracao.md                  # Especificação de extração
 │   ├── limpeza.md                   # Especificação de limpeza
 │   ├── persistencia.md              # Especificação de persistência
 │   ├── pipeline.md                  # Especificação do pipeline
-│   └── agendamento.md               # Especificação do agendamento
+│   ├── agendamento.md               # Especificação do agendamento
+│   └── analise.md                   # Especificação de análises
 ├── dados/                           # Diretório criado automaticamente
 │   └── indicadores.duckdb           # Arquivo de banco (ignorado pelo git)
 ├── logs/                            # Diretório de logs (ignorado pelo git)
@@ -425,3 +459,4 @@ O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a c
 - [x] Persistência em DuckDB (`abrir_conexao`, `criar_tabela`, `gravar`, `ler`)
 - [x] Script de execução de ponta a ponta (`python -m indicadores`)
 - [x] Agendamento diário (Agendador do Windows)
+- [x] Análises de negócio (Selic, IPCA 12m, PTAX mensal)

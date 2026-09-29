@@ -1,11 +1,12 @@
 # Handoff — indicadores-bcb
 
 ## Estado atual
-Pipeline local que busca séries do SGS/Banco Central, limpa os dados e grava em DuckDB. **Está completo e funcionando.**
-- **Commit:** `2a6fbb8` na `main`. Não foi enviado para o repositório remoto, e não foi verificado se existe um remote configurado.
-- **Qualidade:** 117 testes passando (115 + 2 do agendamento), cobertura de 99% e `ruff check .` sem problemas. Nenhum teste acessa a rede.
+Pipeline local que busca séries do SGS/Banco Central, limpa os dados, grava em DuckDB e oferece análises de negócio. **Está completo e funcionando.**
+- **Repositório:** https://github.com/fabioestevam2404/indicadores-bcb, branch `main`. O CI (GitHub Actions) roda lint, testes e cobertura em Ubuntu e Windows a cada push.
+- **Qualidade:** 149 testes passando, cobertura de 99% e `ruff check .` sem problemas. Nenhum teste acessa a rede.
 - **Execução real:** o pipeline rodou contra a API do BCB em 28/09/2026. A primeira execução gravou 3.142 linhas. A segunda atualizou as mesmas 3.142 sem inserir nenhuma, confirmando que rodar de novo não duplica dados.
 - **Agendamento:** a tarefa `indicadores-bcb diario` foi registrada no Agendador do Windows em 28/09/2026 (segunda a sexta, 19:00, só com o usuário logado). Uma execução manual pela própria tarefa (`Start-ScheduledTask`) no mesmo dia terminou com resultado 0, e o log `logs/execucao_2026-09.log` saiu completo, em UTF-8 sem BOM. A primeira execução agendada é 29/09/2026 às 19:00.
+- **Análises:** implementadas três análises puras (Mudanças Selic, IPCA 12m, PTAX mensal), sem I/O e sem dependência de duckdb/httpx.
 
 ## Como rodar
 ```powershell
@@ -38,6 +39,7 @@ Descartes de linhas não mudam o código de saída.
 | `__main__.py` | Linha de comando: argumentos, configuração do log, resumo na saída padrão e logs na saída de erro. |
 | `scripts/executar_diario.ps1` | Wrapper fino chamado pela tarefa agendada (ou manualmente para depurar). Resolve o Python do venv, executa `python -m indicadores` e grava tudo em log mensal. |
 | `scripts/agendar_tarefa.ps1` | Registra/remove a tarefa `indicadores-bcb diario` no Agendador de Tarefas do Windows. |
+| `analise.py` | Três funções puras: `mudancas_selic()`, `ipca_acumulado_12m()`, `ptax_mensal()`. Sem I/O, sem conhecimento de duckdb/httpx. |
 
 Cada módulo tem uma spec em `specs/`, e as specs são a referência para qualquer decisão.
 
@@ -53,6 +55,10 @@ Cada módulo tem uma spec em `specs/`, e as specs são a referência para qualqu
 - **Captura de stdout/stderr:** o wrapper usa `Start-Process -RedirectStandardOutput/-RedirectStandardError` (com arquivos temporários), não `2>&1`. Motivo: no PowerShell 5.1, redirecionar stderr de um executável nativo com `2>&1` embrulha cada linha num `ErrorRecord` que dispara `$ErrorActionPreference = "Stop"` e interrompe o script, mesmo em logs normais (não erros).
 - **Escape de argumentos:** cada argumento com espaço ou aspas passa por escape conforme as regras do `CommandLineToArgvW`, sem confiar no `Start-Process` fazer isso automaticamente — porque `-ArgumentList` de um array não cita os elementos.
 - **Exit codes do wrapper:** 0–3 repassados da CLI, 10 (venv não encontrado), 11 (falha ao iniciar Python), 12 (falha ao preparar o log — nesse caso a mensagem vai para stderr).
+- **Mudanças Selic:** comparação exata de floats (`valor_novo != valor_anterior`); valores de origem são strings determinísticas, então dois valores iguais sempre produzem o mesmo `float64` bit a bit, sem tolerância necessária.
+- **Janela do IPCA:** "consecutivo" é checado por mês civil via `Period` mensal, não por dia exato da data — o SGS não garante um dia específico (ex. sempre dia 1) dentro do mês.
+- **Sem `mes_completo` no PTAX:** `dias_com_dado` sinaliza incômodo mês parcial; coluna `mes_completo` exigiria conhecimento de calendário de feriados ou injeção de "hoje", fora do escopo de uma função pura. Quem consome a análise usa `dias_com_dado` para essa checagem.
+- **`Period.to_timestamp()` no pandas 3:** gera `datetime64[us]` (microssegundos), não nanossegundos; por isso o `astype("datetime64[ns]")` explícito é necessário no PTAX mensal.
 
 ## Ambiente
 Python 3.11.7 e venv em `.venv`. As versões são fixas: `requirements.txt` tem httpx 0.28.1, pandas 3.0.6 e duckdb 1.5.6; `requirements-dev.txt` inclui esse arquivo e acrescenta pytest 9.1.1, pytest-cov 7.1.0 e ruff 0.16.9. Instale com `pip install -r requirements-dev.txt`. O projeto usa o layout `src/`, e o `pyproject.toml` só configura o pytest. O `.gitignore` ignora `*.duckdb`, `logs/` e `.coverage`.
@@ -64,5 +70,5 @@ Python 3.11.7 e venv em `.venv`. As versões são fixas: `requirements.txt` tem 
 - O commit é feito pelo usuário.
 
 ## Próximos passos sugeridos
-1. **Acompanhar as primeiras execuções agendadas.** Conferir `Get-ScheduledTaskInfo -TaskName "indicadores-bcb diario"` (último resultado deve ser 0) e o arquivo `logs/execucao_AAAA-MM.log` depois das 19:00 dos próximos dias úteis.
-2. **Módulo de análise.** Três ideias: datas em que a Selic mudou, IPCA acumulado em 12 meses e PTAX mensal.
+1. **Acompanhar as primeiras execuções agendadas.** Conferir `Get-ScheduledTaskInfo -TaskName "indicadores-bcb diario"` (último resultado deve ser 0) e o arquivo `logs/execucao_AAAA-MM.log` depois das 19:00 dos próximos dias úteis para confirmar funcionamento.
+2. **Ideias futuras** (não priorizadas): correlações entre as séries e expor as análises na CLI.
