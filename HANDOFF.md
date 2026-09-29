@@ -57,7 +57,7 @@ Cada módulo tem uma spec em `specs/`, e as specs são a referência para qualqu
 - **Exit codes do wrapper:** 0–3 repassados da CLI, 10 (venv não encontrado), 11 (falha ao iniciar Python), 12 (falha ao preparar o log — nesse caso a mensagem vai para stderr).
 - **Mudanças Selic:** comparação exata de floats (`valor_novo != valor_anterior`); valores de origem são strings determinísticas, então dois valores iguais sempre produzem o mesmo `float64` bit a bit, sem tolerância necessária.
 - **Janela do IPCA:** "consecutivo" é checado por mês civil via `Period` mensal, não por dia exato da data — o SGS não garante um dia específico (ex. sempre dia 1) dentro do mês.
-- **Sem `mes_completo` no PTAX:** `dias_com_dado` sinaliza incômodo mês parcial; coluna `mes_completo` exigiria conhecimento de calendário de feriados ou injeção de "hoje", fora do escopo de uma função pura. Quem consome a análise usa `dias_com_dado` para essa checagem.
+- **Sem `mes_completo` no PTAX:** `dias_com_dado` sinaliza o mês parcial; coluna `mes_completo` exigiria conhecimento de calendário de feriados ou injeção de "hoje", fora do escopo de uma função pura. Quem consome a análise usa `dias_com_dado` para essa checagem.
 - **`Period.to_timestamp()` no pandas 3:** gera `datetime64[us]` (microssegundos), não nanossegundos; por isso o `astype("datetime64[ns]")` explícito é necessário no PTAX mensal.
 
 ## Ambiente
