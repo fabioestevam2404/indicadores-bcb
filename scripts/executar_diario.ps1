@@ -78,6 +78,80 @@ function Format-Argumento {
     return $resultado.ToString()
 }
 
+function Invoke-Pipeline {
+    <#
+        Executa `python -m indicadores` uma vez (tentativa $Tentativa),
+        grava os blocos stdout/stderr no log e devolve o exit code
+        (11 se o processo nao iniciou ou se o ExitCode veio nulo).
+        Cuida dos proprios arquivos temporarios.
+    #>
+    param([Parameter(Mandatory = $true)][int]$Tentativa)
+
+    $stdoutTmp = [System.IO.Path]::GetTempFileName()
+    $stderrTmp = [System.IO.Path]::GetTempFileName()
+
+    try {
+        $processo = $null
+        try {
+            $processo = Start-Process -FilePath $pythonExe `
+                -ArgumentList $argumentosFormatados `
+                -WorkingDirectory $repoRoot `
+                -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput $stdoutTmp `
+                -RedirectStandardError $stderrTmp
+        } catch {
+            Write-Log "ERRO ao iniciar o processo Python: $($_.Exception.Message)`r`n"
+            return 11
+        }
+
+        # Contorno de uma armadilha conhecida do PowerShell 5.1: mesmo com
+        # -Wait, em alguns cenarios $processo.ExitCode pode vir vazio se o
+        # handle nativo do processo foi liberado cedo demais. Acessar
+        # .Handle e chamar WaitForExit() (idempotente em processo ja
+        # encerrado) forca o CLR a manter o handle e preencher ExitCode.
+        try {
+            $processo.Handle | Out-Null
+            $processo.WaitForExit()
+        } catch {
+            # Ignorado: o proximo bloco trata ExitCode nulo como falha.
+        }
+        $exitCodePython = $processo.ExitCode
+
+        try {
+            $stdoutTexto = Get-Content -Raw -Encoding UTF8 -Path $stdoutTmp -ErrorAction Stop
+        } catch {
+            Write-Log "AVISO: falha ao ler stdout do processo: $($_.Exception.Message)`r`n"
+            $stdoutTexto = $null
+        }
+        try {
+            $stderrTexto = Get-Content -Raw -Encoding UTF8 -Path $stderrTmp -ErrorAction Stop
+        } catch {
+            Write-Log "AVISO: falha ao ler stderr do processo: $($_.Exception.Message)`r`n"
+            $stderrTexto = $null
+        }
+
+        Write-Log "--- stdout (tentativa $Tentativa) ---`r`n"
+        if ($stdoutTexto) { Write-Log $stdoutTexto }
+        Write-Log "`r`n"
+        Write-Log "--- stderr (tentativa $Tentativa) ---`r`n"
+        if ($stderrTexto) { Write-Log $stderrTexto }
+        Write-Log "`r`n"
+
+        if ($null -eq $exitCodePython) {
+            # $null nunca e tratado como sucesso: e sempre falha do wrapper.
+            Write-Log "ERRO: nao foi possivel obter o exit code do processo Python.`r`n"
+            return 11
+        }
+        return [int]$exitCodePython
+    } finally {
+        # Roda mesmo com `return` nos blocos internos. Excecao aceita: um
+        # encerramento forcado pelo `ExecutionTimeLimit` do Agendador
+        # (TerminateProcess) nao passa por nenhum `finally`; os temporarios
+        # podem sobrar em %TEMP% - risco baixo e aceito.
+        Remove-Item -Path $stdoutTmp, $stderrTmp -ErrorAction SilentlyContinue
+    }
+}
+
 $repoRoot  = Split-Path -Parent $PSScriptRoot
 $pythonExe = Join-Path $repoRoot ".venv\Scripts\python.exe"
 
@@ -101,93 +175,68 @@ try {
     exit 12
 }
 
-if (-not (Test-Path -Path $pythonExe -PathType Leaf)) {
-    $fim = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Write-Log "ERRO: python do venv nao encontrado em '$pythonExe'.`r`n"
-    Write-Log "===== $fim - fim (exit code: 10) =====`r`n"
-    exit 10
-}
-
-$env:PYTHONPATH       = Join-Path $repoRoot "src"
-$env:PYTHONUTF8       = "1"
-$env:PYTHONIOENCODING = "utf-8"
-
-$argumentosPython     = @("-m", "indicadores") + $args
-$argumentosFormatados = $argumentosPython | ForEach-Object { Format-Argumento $_ }
-
-$stdoutTmp = [System.IO.Path]::GetTempFileName()
-$stderrTmp = [System.IO.Path]::GetTempFileName()
-
+# Tudo o que vem depois da preparacao do log fica num try/catch de topo:
+# qualquer excecao inesperada do proprio wrapper (GetTempFileName,
+# Write-Log, laco de tentativas...) vira exit 13, com registro no log se
+# ainda for possivel, ou em stderr caso contrario. 10, 11 e 12 mantem o
+# significado proprio (venv ausente, falha ao iniciar, log inacessivel).
 try {
-    $processo = $null
-    try {
-        $processo = Start-Process -FilePath $pythonExe `
-            -ArgumentList $argumentosFormatados `
-            -WorkingDirectory $repoRoot `
-            -NoNewWindow -Wait -PassThru `
-            -RedirectStandardOutput $stdoutTmp `
-            -RedirectStandardError $stderrTmp
-    } catch {
+    # Espera (em segundos) antes da nova tentativa quando o pipeline sai com 1
+    # (ex.: rede ainda indisponivel logo apos o PC acordar). Padrao 300; pode
+    # ser sobrescrita por INDICADORES_ESPERA_RETRY_SEGUNDOS. Parse estrito:
+    # so digitos (NumberStyles.None), entao "+5", " 5 ", "-1" e "abc" sao
+    # invalidos. Variavel ausente/vazia usa 300 sem aviso.
+    $esperaRetrySegundos = 300
+    $esperaBruta = $env:INDICADORES_ESPERA_RETRY_SEGUNDOS
+    if (-not [string]::IsNullOrEmpty($esperaBruta)) {
+        $esperaLida = 0
+        $valida = [int]::TryParse(
+            $esperaBruta,
+            [System.Globalization.NumberStyles]::None,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [ref]$esperaLida
+        )
+        if ($valida) {
+            $esperaRetrySegundos = $esperaLida
+        } else {
+            Write-Log "AVISO: valor inválido em INDICADORES_ESPERA_RETRY_SEGUNDOS ('$esperaBruta'); usando 300`r`n"
+        }
+    }
+
+    if (-not (Test-Path -Path $pythonExe -PathType Leaf)) {
         $fim = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        Write-Log "ERRO ao iniciar o processo Python: $($_.Exception.Message)`r`n"
-        Write-Log "===== $fim - fim (exit code: 11) =====`r`n"
-        exit 11
+        Write-Log "ERRO: python do venv nao encontrado em '$pythonExe'.`r`n"
+        Write-Log "===== $fim - fim (exit code: 10) =====`r`n"
+        exit 10
     }
 
-    # Contorno de uma armadilha conhecida do PowerShell 5.1: mesmo com
-    # -Wait, em alguns cenarios $processo.ExitCode pode vir vazio se o
-    # handle nativo do processo foi liberado cedo demais. Acessar
-    # .Handle e chamar WaitForExit() (idempotente em processo ja
-    # encerrado) forca o CLR a manter o handle e preencher ExitCode.
-    try {
-        $processo.Handle | Out-Null
-        $processo.WaitForExit()
-    } catch {
-        # Ignorado: o processo ja pode ter terminado/sido descartado;
-        # o proximo bloco trata $exitCodePython nulo como falha.
-    }
-    $exitCodePython = $processo.ExitCode
+    $env:PYTHONPATH       = Join-Path $repoRoot "src"
+    $env:PYTHONUTF8       = "1"
+    $env:PYTHONIOENCODING = "utf-8"
 
-    try {
-        $stdoutTexto = Get-Content -Raw -Encoding UTF8 -Path $stdoutTmp -ErrorAction Stop
-    } catch {
-        Write-Log "AVISO: falha ao ler stdout do processo: $($_.Exception.Message)`r`n"
-        $stdoutTexto = $null
-    }
-    try {
-        $stderrTexto = Get-Content -Raw -Encoding UTF8 -Path $stderrTmp -ErrorAction Stop
-    } catch {
-        Write-Log "AVISO: falha ao ler stderr do processo: $($_.Exception.Message)`r`n"
-        $stderrTexto = $null
-    }
+    $argumentosPython     = @("-m", "indicadores") + $args
+    $argumentosFormatados = $argumentosPython | ForEach-Object { Format-Argumento $_ }
 
-    Write-Log "--- stdout ---`r`n"
-    if ($stdoutTexto) { Write-Log $stdoutTexto }
-    Write-Log "`r`n"
-    Write-Log "--- stderr ---`r`n"
-    if ($stderrTexto) { Write-Log $stderrTexto }
-    Write-Log "`r`n"
-
-    if ($null -eq $exitCodePython) {
-        # $null nunca e tratado como sucesso: e sempre falha do wrapper.
-        $fim = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        Write-Log "ERRO: nao foi possivel obter o exit code do processo Python.`r`n"
-        Write-Log "===== $fim - fim (exit code: 11) =====`r`n"
-        exit 11
+    $exitFinal = Invoke-Pipeline -Tentativa 1
+    if ($exitFinal -eq 1) {
+        # Uma unica nova tentativa; nunca ha tentativa 3. Os demais codigos
+        # (0, 2, 3, 10, 11, 12) nunca disparam nova tentativa.
+        Write-Log "AVISO: exit 1; nova tentativa em $esperaRetrySegundos s`r`n"
+        Start-Sleep -Seconds $esperaRetrySegundos
+        $exitFinal = Invoke-Pipeline -Tentativa 2
     }
 
     $fim = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Write-Log "===== $fim - fim (exit code: $exitCodePython) =====`r`n"
-    exit $exitCodePython
-} finally {
-    # Este `finally` roda mesmo quando um `catch` interno (acima) chama
-    # `exit` (confirmado no PowerShell 5.1: `exit` dentro de um bloco
-    # protegido ainda aciona o `finally` correspondente antes de encerrar
-    # o processo). Excecao aceita: um encerramento forcado pelo
-    # `ExecutionTimeLimit` do Agendador de Tarefas (TerminateProcess) mata
-    # o processo de fora para dentro e nao passa por nenhum `finally`;
-    # nesse caso os arquivos temporarios abaixo podem sobrar em %TEMP%
-    # ate uma limpeza externa do sistema - risco baixo e aceito, sem
-    # tratamento especial aqui.
-    Remove-Item -Path $stdoutTmp, $stderrTmp -ErrorAction SilentlyContinue
+    Write-Log "===== $fim - fim (exit code: $([int]$exitFinal)) =====`r`n"
+    exit [int]$exitFinal
+} catch {
+    $mensagemInesperada = $_.Exception.Message
+    try {
+        Write-Log "ERRO inesperado no wrapper: $mensagemInesperada`r`n"
+        $fimInesperado = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Write-Log "===== $fimInesperado - fim (exit code: 13) =====`r`n"
+    } catch {
+        [Console]::Error.WriteLine("ERRO inesperado no wrapper: $mensagemInesperada")
+    }
+    exit 13
 }

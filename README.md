@@ -1,6 +1,6 @@
 # indicadores-bcb
 
-Pipeline local que coleta séries do SGS/Banco Central, limpa, grava em DuckDB e oferece análises de negócio. Implementa **extração**, **limpeza**, **persistência em DuckDB** e **análises**.
+Pipeline local que coleta séries do SGS/Banco Central, limpa os dados, grava em DuckDB e oferece análises de negócio. Implementa **extração**, **limpeza**, **persistência em DuckDB** e **análises**.
 
 ## Stack
 
@@ -22,13 +22,13 @@ Período: últimos 5 anos a partir da data de referência (data atual no fuso de
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
 ### Linux / macOS
 
 ```bash
-python -m venv .venv && source .venv/bin/activate && pip install -r requirements-dev.txt
+python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 ```
 
 As versões são fixas. `requirements.txt` tem só o necessário para rodar o pipeline (httpx, pandas, duckdb); `requirements-dev.txt` inclui esse arquivo e acrescenta pytest, pytest-cov e ruff. Para só executar o pipeline, sem testes, basta `requirements.txt`.
@@ -116,7 +116,16 @@ Os logs são emitidos em stderr no formato `NIVEL logger: mensagem`.
 
 ## Agendamento diário (Windows)
 
-A tarefa agendada `indicadores-bcb diario` executa automaticamente de segunda a sexta às 19:00. Se o PC estava desligado no horário, roda assim que possível após o logon. Nunca executa duas vezes ao mesmo tempo e tem limite de 30 minutos por execução.
+A tarefa agendada `indicadores-bcb diario` executa automaticamente de segunda a sexta às 19:00, com o usuário logado.
+
+### O que a tarefa faz
+
+- **Acorda o PC**: usa `-WakeToRun` para despertar da suspensão (só funciona com o notebook ligado à tomada; PC desligado ou hibernado não acorda).
+- **Espera a rede**: não inicia até a rede estar disponível (`-RunOnlyIfNetworkAvailable`).
+- **Nova tentativa automática**: se a execução terminar com exit 1 (série falhada), espera 5 minutos (padrão, configurável via `INDICADORES_ESPERA_RETRY_SEGUNDOS`) e tenta uma única vez de novo. Seguro por upsert.
+- **Limite de execução**: 60 minutos por tentativa.
+
+O log mostra cada tentativa com o rótulo `(tentativa N)`.
 
 ### Registrar a tarefa
 
@@ -126,7 +135,7 @@ A partir da raiz do repositório:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\agendar_tarefa.ps1
 ```
 
-Não requer privilégios de administrador. Rodar de novo só atualiza a tarefa existente (é idempotente).
+Não requer privilégios de administrador. Rodar de novo só atualiza a tarefa existente (é idempotente). Tarefa registrada em 07/10/2026.
 
 ### Remover a tarefa
 
@@ -152,31 +161,43 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\executar_diario.
 
 As execuções são registradas em `logs/execucao_AAAA-MM.log` (um arquivo por mês, em UTF-8 sem BOM). Cada execução grava um cabeçalho de início, o resumo (stdout), os logs (stderr) e um rodapé com o exit code. O diretório `logs/` é criado automaticamente e é ignorado pelo git (sem rotação automática).
 
-Exemplo de conteúdo:
+Exemplo de conteúdo com nova tentativa:
 
 ```
-===== 2026-09-28 19:00:15 - início =====
+===== 2026-10-07 19:00:15 - início =====
 
---- stdout ---
+--- stdout (tentativa 1) ---
 Séries gravadas:
   432 (selic_meta): 0 inseridos, 20 atualizados
 ...
 
---- stderr ---
+--- stderr (tentativa 1) ---
 INFO indicadores.pipeline: executar iniciado
 ...
 
-===== 2026-09-28 19:00:22 - fim (exit code: 0) =====
+AVISO: exit 1; nova tentativa em 300 s
+
+--- stdout (tentativa 2) ---
+Séries gravadas:
+  432 (selic_meta): 0 inseridos, 20 atualizados
+...
+
+--- stderr (tentativa 2) ---
+INFO indicadores.pipeline: executar iniciado
+...
+
+===== 2026-10-07 19:05:35 - fim (exit code: 0) =====
 ```
 
 ### Exit codes do wrapper
 
 | Código | Situação |
 |--------|----------|
-| 0–3 | Repassado da CLI (mesmos códigos de `python -m indicadores`) |
+| 0–3 | Repassado da CLI (mesmos códigos de `python -m indicadores`) — da última tentativa se houver retry |
 | 10 | venv não encontrado (`.venv\Scripts\python.exe` ausente) |
 | 11 | Falha ao iniciar o Python |
 | 12 | Falha ao preparar o log (criar diretório ou gravar cabeçalho); mensagem vai para stderr |
+| 13 | Erro inesperado no wrapper depois que o log foi preparado |
 
 ### Conferir status
 
@@ -188,9 +209,19 @@ Get-ScheduledTaskInfo -TaskName "indicadores-bcb diario"
 
 Mostra a última execução, o resultado e a próxima execução.
 
+#### Ativar histórico do Agendador
+
+Para ver detalhes de cada execução, ative o histórico (requer administrador):
+
+```powershell
+wevtutil set-log Microsoft-Windows-TaskScheduler/Operational /enabled:true
+```
+
+Se uma tarefa for encerrada à força (ex.: logoff, desligamento), o `LastTaskResult` mostra `3221225786` (0xC000013A). O log no disco pode ficar sem rodapé, indicando interrupção.
+
 ### Observação
 
-Uma janela do PowerShell pode piscar por um instante no horário da execução — é comportamento normal do Windows quando a tarefa roda com a sessão do usuário logado. Um encerramento forçado pelo limite de 30 minutos pode deixar arquivos temporários em `%TEMP%`.
+Uma janela do PowerShell pode piscar por um instante no horário da execução — é comportamento normal do Windows quando a tarefa roda com a sessão do usuário logado.
 
 ## Uso programático
 
@@ -372,7 +403,7 @@ As funções aceitam o DataFrame de `ler` ou de `limpar.dados` e devolvem DataFr
 
 **Observações:**
 - Funções são puras: mesma entrada sempre produz mesma saída.
-- Trabalham com dados já limpos (sem duplicação por `(codigo, data)`); não reimplemen tam essa deduplicação.
+- Trabalham com dados já limpos (sem duplicação por `(codigo, data)`); não reimplementam essa deduplicação.
 - Ordenadas internamente por data/período, nunca dependem da ordem de entrada.
 
 ## Erros e retry (extração)
@@ -446,8 +477,6 @@ O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a c
 ├── logs/                            # Diretório de logs (ignorado pelo git)
 │   └── execucao_YYYY-MM.log         # Logs mensais da tarefa agendada
 ├── requirements.txt                 # Dependências de execução (versões fixas)
-├── requirements-dev.txt             # + pytest, pytest-cov, ruff
-├── .github/workflows/ci.yml         # CI: lint, testes e cobertura
 ├── pyproject.toml
 └── README.md
 ```
@@ -457,6 +486,6 @@ O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a c
 - [x] Extração de dados brutos (`buscar_serie`, `buscar_series`)
 - [x] Limpeza e tipagem (conversão de valores, datas datetime64[ns])
 - [x] Persistência em DuckDB (`abrir_conexao`, `criar_tabela`, `gravar`, `ler`)
-- [x] Script de execução de ponta a ponta (`python -m indicadores`)
-- [x] Agendamento diário (Agendador do Windows)
-- [x] Análises de negócio (Selic, IPCA 12m, PTAX mensal)
+- [x] Orquestração de ponta a ponta (`pipeline.executar`)
+- [x] Agendamento no Agendador do Windows (despertar, nova tentativa em exit 1, 60 min limit)
+- [x] Análises de negócio (Mudanças Selic, IPCA 12m, PTAX mensal)

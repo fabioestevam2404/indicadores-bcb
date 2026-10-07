@@ -41,9 +41,11 @@ $gatilho = New-ScheduledTaskTrigger -Weekly `
 $configuracoes = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 30) `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 60) `
     -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries
+    -DontStopIfGoingOnBatteries `
+    -RunOnlyIfNetworkAvailable `
+    -WakeToRun
 
 $principal = New-ScheduledTaskPrincipal `
     -UserId "$env:USERDOMAIN\$env:USERNAME" `
@@ -64,3 +66,4 @@ Write-Host "Tarefa registrada: $nomeTarefa"
 Write-Host "Proxima execucao: $($info.NextRunTime)"
 $caminhoScriptAgendar = Join-Path $repoRoot "scripts\agendar_tarefa.ps1"
 Write-Host "Para remover: powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$caminhoScriptAgendar`" -Remover"
+Write-Host "Aviso: o despertar (-WakeToRun) so acontece com o notebook na tomada; o plano de energia atual tem despertadores ativados na tomada e desativados na bateria."
