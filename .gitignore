@@ -6,3 +6,7 @@ __pycache__/
 *.duckdb
 relatorio.md
 logs/
+
+# Documentos pessoais de planejamento (fora do repositório)
+roadmap-indicadores-bcb.md
+A ideia central.docx
