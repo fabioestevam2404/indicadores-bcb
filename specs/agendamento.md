@@ -7,8 +7,9 @@ Agendador de Tarefas do Windows. O pipeline e a CLI já existem e estão
 prontos (lidos diretamente de `specs/pipeline.md` e
 `src/indicadores/__main__.py` para confirmar exit codes e canais de
 I/O): exit codes `0` (sucesso total), `1` (alguma série ignorada), `2`
-(uso de CLI inválido, via `argparse`), `3` (erro inesperado); resumo
-sempre em stdout, logs sempre em stderr.
+(uso de CLI inválido, via `argparse`), `3` (erro inesperado) e `4`
+(dados gravados, mas o relatório HTML não pôde ser gerado — ver
+`specs/relatorio.md`); resumo sempre em stdout, logs sempre em stderr.
 
 ## Objetivo
 Rodar `python -m indicadores` automaticamente, todo dia útil às 16:00,
@@ -39,7 +40,8 @@ quando o pipeline termina com exit 1".
 4. O wrapper faz **uma única nova tentativa** quando o pipeline termina
    com exit `1`, depois de uma espera (padrão 300 s) — mesma aprovação
    e mesmo motivo do item 3. O exit `3` **não** dispara nova tentativa
-   (ver "Nova tentativa quando o pipeline termina com exit 1").
+   (ver "Nova tentativa quando o pipeline termina com exit 1"); o exit
+   `4` (falha só do relatório) também não.
 5. A tarefa usa `-WakeToRun`, para acordar o PC da suspensão no
    horário — com as condições do notebook do usuário registradas em
    `agendar_tarefa.ps1` (Modern Standby; despertadores só na tomada).
@@ -302,17 +304,17 @@ cai no exit `13` — ver "Exit codes do wrapper".)
 ### Exit codes do wrapper
 | Código | Situação |
 |---|---|
-| `0`–`3` | Repassado **exatamente** como veio do processo Python (`$processo.ExitCode`) da **última tentativa executada** — mesma semântica de `specs/pipeline.md`/`__main__.py`. Só o exit `1` provoca uma nova tentativa; `0`, `2` e `3` encerram o wrapper de imediato. |
+| `0`–`4` | Repassado **exatamente** como veio do processo Python (`$processo.ExitCode`) da **última tentativa executada** — mesma semântica de `specs/pipeline.md`/`__main__.py` (o `4` é "dados gravados, relatório não gerado", definido em `specs/relatorio.md`). Só o exit `1` provoca uma nova tentativa; `0`, `2`, `3` e `4` encerram o wrapper de imediato. O wrapper **não muda** por causa do `4`: ele já repassa qualquer inteiro como veio e só repete no `1`. |
 | `10` | `.venv\Scripts\python.exe` não encontrado — infraestrutura local ausente, o Python nunca chega a rodar. |
 | `11` | Falha ao iniciar o processo Python via `Start-Process` (ex.: exceção do próprio PowerShell antes de conseguir spawnar o processo); **ou** `$processo.ExitCode` vem `$null` — cenário raro relatado em alguns ambientes de PowerShell 5.1 com `-PassThru`. Vale para qualquer das tentativas (inclusive a segunda: se a nova tentativa não consegue nem iniciar, o exit final é `11`, não `1`). |
 | `12` | Não foi possível **preparar o log**: falha ao criar o diretório de log (`New-Item -ItemType Directory`) ou falha ao gravar o cabeçalho inicial (a primeira escrita via `AppendAllText`). Nesse caso a mensagem de erro vai para **stderr** do próprio wrapper, porque o arquivo de log não existe ou não pôde ser preparado para receber a mensagem. |
 | `13` | **Erro inesperado no wrapper depois que o log foi preparado** — por exemplo disco cheio ao gravar no log, falha ao criar um arquivo temporário (`GetTempFileName`) ou qualquer outra exceção não tratada depois da gravação do cabeçalho. O wrapper registra `ERRO: <mensagem>` e o rodapé no log (melhor esforço; se a gravação no log falhar, a mensagem vai para stderr, como no `12`) e termina com `13`. Se o exit code do Python da tentativa em curso já era conhecido, a mensagem o informa ("exit do pipeline: N"), para não perder essa informação. |
 
 Decisão registrada: os códigos de infraestrutura do **wrapper**
-começam em `10`, deliberadamente fora da faixa `0`–`3` já usada pelo
+começam em `10`, deliberadamente fora da faixa `0`–`4` já usada pelo
 Python (`specs/pipeline.md`), para que quem olhar o "Resultado da
 última execução" no Agendador de Tarefas consiga distinguir, só pelo
-número, "o pipeline rodou e teve um problema" (`0`–`3`) de "o wrapper
+número, "o pipeline rodou e teve um problema" (`0`–`4`) de "o wrapper
 nem conseguiu rodar o pipeline" (`≥ 10`).
 
 Decisão adicional registrada — **`ExitCode` nulo nunca é sucesso**: o
@@ -350,7 +352,7 @@ converte qualquer exceção não tratada em `exit 13`. Sem isso, o
 PowerShell terminaria com o exit `1` genérico — ambíguo com "série
 ignorada" (`1`) do pipeline, exatamente o problema que o `12` já
 resolve para a fase de preparo do log. Os `exit` explícitos dos demais
-caminhos (`10`, `11`, e o repasse de `0`–`3`) não são exceções e não
+caminhos (`10`, `11`, e o repasse de `0`–`4`) não são exceções e não
 passam por esse `catch`; os `finally` que apagam os temporários
 continuam rodando (comportamento já confirmado — ver "Limitações
 conhecidas"). Com `12` e `13`, **todo** exit `1` observado pelo wrapper
@@ -382,13 +384,17 @@ declara a rede disponível mas DNS/rota ainda não funcionam.
      próprios trechos `--- stdout (tentativa 2) ---` e
      `--- stderr (tentativa 2) ---`;
   5. usa como exit code final o da segunda tentativa (que pode ser `0`,
-     `1`, `2`, `3` ou, se ela nem conseguir iniciar, `11`).
+     `1`, `2`, `3`, `4` ou, se ela nem conseguir iniciar, `11`).
 - Nunca há terceira tentativa, mesmo que a segunda também termine com
   exit `1`.
 - **Nunca há nova tentativa** para exit `0` (sucesso), `2` (uso de CLI
-  inválido — repetir não muda nada), `3` nem para os códigos do próprio
-  wrapper (`10`, `11`, `12`, `13`, que encerram antes ou sem resultado
-  confiável do Python).
+  inválido — repetir não muda nada), `3`, `4` nem para os códigos do
+  próprio wrapper (`10`, `11`, `12`, `13`, que encerram antes ou sem
+  resultado confiável do Python).
+- **Exit `4` não repete:** os dados já foram gravados e a falha é só do
+  relatório (não é de rede), então rebuscar a API não ajuda; repetir todo
+  o pipeline por isso seria custo sem benefício (motivo completo em
+  `specs/relatorio.md`, "Integração na CLI", decisão 1 e 2).
 - **Exit `3` não repete (decisão do usuário):** um banco bloqueado (ou
   outro erro inesperado) raramente se resolve em 5 minutos, e repetir
   esconderia bugs — o exit `3` sinaliza algo que deve aparecer no
@@ -787,7 +793,7 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
 ## Regras de negócio
 1. O wrapper nunca acessa a rede nem o DuckDB diretamente — só invoca
    `python -m indicadores` como subprocesso e captura sua saída.
-2. O exit code do wrapper é sempre o exit code do Python (`0`–`3`) da
+2. O exit code do wrapper é sempre o exit code do Python (`0`–`4`) da
    última tentativa executada, exceto quando o próprio wrapper falha
    antes de conseguir rodar o Python, não consegue determinar o exit
    code real, não consegue preparar o log ou sofre um erro inesperado
@@ -816,10 +822,11 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
 12. Exit `1` do Python provoca **uma única** nova tentativa, com os
     mesmos argumentos, no mesmo bloco do log; nunca há terceira
     tentativa.
-13. Nunca há nova tentativa para exit `0`, `2`, `3`, `10`, `11`, `12`
-    ou `13`. O exit `3` não repete por decisão do usuário (banco
+13. Nunca há nova tentativa para exit `0`, `2`, `3`, `4`, `10`, `11`,
+    `12` ou `13`. O exit `3` não repete por decisão do usuário (banco
     bloqueado raramente se resolve em 5 minutos; repetir esconderia
-    bugs).
+    bugs); o `4` não repete porque a falha é só do relatório e os dados
+    já foram gravados.
 14. Os blocos da tentativa 1 e a linha `AVISO` da nova tentativa são
     gravados no log **antes** da espera.
 15. A espera `N` é 300 s por padrão; `INDICADORES_ESPERA_RETRY_SEGUNDOS`
@@ -883,7 +890,7 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
    <mensagem>` e rodapé `exit code: 13` no log, e nunca no `1` genérico
    do PowerShell.
 10. O wrapper não deixa arquivos temporários (`GetTempFileName`) para
-    trás após terminar, em nenhum dos cenários normais (exit `0`–`3`,
+    trás após terminar, em nenhum dos cenários normais (exit `0`–`4`,
     `10`, `11`, `12`, `13`, inclusive quando há nova tentativa e no
     cenário de queda de rede) — a única exceção aceita e registrada é o
     encerramento forçado (Agendador por `ExecutionTimeLimit`, ou
@@ -895,8 +902,10 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
     (com "erro de conexão" no trecho da tentativa 2 no cenário de queda
     de rede), o rodapé registra o exit code da segunda tentativa, e
     "tentativa 3" nunca aparece.
-12. Nenhuma nova tentativa ocorre para exit `0`, `2`, `3`, `10`, `11`,
-    `12` ou `13` (o log não contém "tentativa 2").
+12. Nenhuma nova tentativa ocorre para exit `0`, `2`, `3`, `4`, `10`,
+    `11`, `12` ou `13` (o log não contém "tentativa 2"). O exit `4`
+    é repassado como veio, sem nenhuma mudança no script (teste 57 de
+    `specs/relatorio.md`).
 13. `INDICADORES_ESPERA_RETRY_SEGUNDOS` com valor válido (só dígitos,
     inclusive `0`) define `N`; definida e inválida (`"+5"`, `" 5 "`,
     `"-1"`, `"abc"`, `"1.5"`) o wrapper usa 300 e registra, logo depois
@@ -938,8 +947,8 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
 3. `test_executar_diario_argumento_invalido_retorna_dois` — roda o
    wrapper com `--series abc`; assert `returncode == 2` e que o log
    contém `"exit code: 2"`.
-4. `test_executar_diario_sem_venv_retorna_dez` — roda o wrapper a
-   partir de uma cópia/estrutura de teste onde `.venv\Scripts\python.exe`
+4. `test_executar_diario_sem_venv_retorna_dez` — roda o wrapper
+   a partir de uma cópia/estrutura de teste onde `.venv\Scripts\python.exe`
    não existe (ex.: apontando `$PSScriptRoot` para uma árvore de
    diretórios isolada em `tmp_path`, sem `.venv`); assert
    `returncode == 10` e que o log registra o motivo, sem indicar
@@ -972,7 +981,7 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
 8. `test_wrapper_falha_inesperada_apos_log_retorna_treze` — roda o
    wrapper com `INDICADORES_LOG_DIR=tmp_path` (log preparado com
    sucesso) e com `TMP`/`TEMP` apontando para um diretório **inexistente**
-   (ex. `<tmp_path>\nao_existe`), o que faz `GetTempFileName()` falhar
+   (ex.: `<tmp_path>\nao_existe`), o que faz `GetTempFileName()` falhar
    **depois** do cabeçalho; assert `returncode == 13`, que o log contém
    `"ERRO:"` e `"exit code: 13"`, e que **não** contém `"tentativa 2"`.
    **A confirmar pelo implementer:** que o `powershell.exe` inicia
@@ -1059,12 +1068,15 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
 19. `test_gitignore_ignora_logs` — leitura simples do `.gitignore` do
     repositório; assert que a linha `logs/` está presente.
 
+O teste do wrapper para o exit `4` (`test_wrapper_repassa_exit_4_sem_nova_tentativa`,
+caso 57) está definido em `specs/relatorio.md` e não é duplicado aqui.
+
 ## Convenções seguidas
 - Comentários e mensagens de log em português, consistente com o
   restante do projeto.
 - Nenhum teste escreve fora de `tmp_path` (via `INDICADORES_LOG_DIR` e
   `--banco`) e nenhum teste registra tarefa real no Agendador.
-- Exit codes do wrapper (`0`–`3`) espelham exatamente os já definidos
+- Exit codes do wrapper (`0`–`4`) espelham exatamente os já definidos
   em `specs/pipeline.md`; códigos de infraestrutura do wrapper
   (`≥ 10`) são uma faixa nova, deliberadamente sem sobreposição.
 - Scripts PowerShell ficam em `scripts/`, paralelos a `src/` e `tests/`,

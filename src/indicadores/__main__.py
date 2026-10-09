@@ -9,14 +9,16 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
+import duckdb
 import httpx
 
-from indicadores.extracao import criar_client
-from indicadores.persistencia import CAMINHO_PADRAO, abrir_conexao
+from indicadores.extracao import FUSO_BRASILIA, criar_client
+from indicadores.persistencia import CAMINHO_PADRAO, abrir_conexao, ler
 from indicadores.pipeline import executar, formatar_resumo
+from indicadores.relatorio import RELATORIO_PADRAO, gerar_html, gravar_relatorio
 
 logger = logging.getLogger("indicadores.pipeline")
 
@@ -71,7 +73,39 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=0,
         help="-v para INFO, -vv para DEBUG (default: WARNING)",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--relatorio",
+        type=Path,
+        default=RELATORIO_PADRAO,
+        metavar="CAMINHO",
+        help=(
+            f"caminho do relatório HTML (default: {RELATORIO_PADRAO}); "
+            "ignorado com --sem-relatorio"
+        ),
+    )
+    grupo = parser.add_mutually_exclusive_group()
+    grupo.add_argument(
+        "--sem-relatorio",
+        action="store_true",
+        help="não gera o relatório HTML",
+    )
+    grupo.add_argument(
+        "--so-relatorio",
+        action="store_true",
+        help=(
+            "só regenera o relatório a partir do banco existente "
+            "(sem rede e sem gravar no banco)"
+        ),
+    )
+    args = parser.parse_args(argv)
+    if args.so_relatorio and (
+        args.series is not None or args.data_referencia is not None
+    ):
+        parser.error(
+            "--so-relatorio não pode ser combinado com --series "
+            "nem com --data-referencia"
+        )
+    return args
 
 
 def _configurar_logging(verbose: int) -> None:
@@ -112,6 +146,60 @@ def _configurar_logging(verbose: int) -> None:
     _handler_atual = handler
 
 
+def _gerar_relatorio(
+    conexao: duckdb.DuckDBPyConnection,
+    caminho: Path,
+    *,
+    so_relatorio: bool = False,
+) -> bool:
+    """Lê o banco, gera e grava o relatório. Nunca propaga; devolve sucesso."""
+    try:
+        dados = ler(conexao)
+        gerado_em = datetime.now(FUSO_BRASILIA).replace(tzinfo=None)
+        gravar_relatorio(gerar_html(dados, gerado_em=gerado_em), caminho)
+    except Exception:
+        if so_relatorio:
+            logger.exception("falha ao gerar o relatório")
+        else:
+            logger.exception(
+                "falha ao gerar o relatório; os dados foram gravados normalmente"
+            )
+        return False
+    logger.info("relatório gravado em %s", caminho)
+    # O arquivo já existe; falhar só ao exibir a mensagem não é falha do relatório.
+    try:
+        if not so_relatorio:
+            print()  # linha em branco depois do resumo do pipeline
+        print(f"Relatório gravado em: {caminho}")
+    except (OSError, UnicodeError) as erro:
+        logger.warning(
+            "relatório gravado em %s, mas não foi possível exibir a mensagem "
+            "de sucesso: %s",
+            caminho,
+            erro,
+        )
+    return True
+
+
+def _so_relatorio(args: argparse.Namespace) -> int:
+    """Modo `--so-relatorio`: regenera o relatório sem client nem escrita no banco."""
+    if not args.banco.is_file():
+        logger.error("banco não encontrado: %s", args.banco)
+        return 4
+
+    conexao = None
+    try:
+        conexao = abrir_conexao(args.banco, somente_leitura=True)
+        sucesso = _gerar_relatorio(conexao, args.relatorio, so_relatorio=True)
+    except Exception:
+        logger.exception("falha ao abrir o banco para gerar o relatório")
+        return 4
+    finally:
+        if conexao is not None:
+            conexao.close()
+    return 0 if sucesso else 4
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -130,9 +218,17 @@ def main(
     mesmo arquivo `--banco` provavelmente fazem a segunda falhar ao
     abrir o arquivo (bloqueado pela primeira conexão), terminando com
     exit code 3 — não há tratamento especial de concorrência aqui.
+
+    Depois do resumo, regenera o relatório HTML a partir do banco (salvo
+    `--sem-relatorio`). Falha do relatório nunca desfaz os dados: vira
+    exit code 4 se o resto daria 0; com exit code 1 ele é preservado.
+    `--so-relatorio` só gera o relatório (0 ou 4). Ver `specs/relatorio.md`.
     """
     args = _parse_args(argv)
     _configurar_logging(args.verbose)
+
+    if args.so_relatorio:
+        return _so_relatorio(args)
 
     meu_client: httpx.Client | None = None
     conexao = None
@@ -153,6 +249,10 @@ def main(
     else:
         print(formatar_resumo(resumo))
         codigo_saida = 1 if resumo.series_ignoradas else 0
+        if not args.sem_relatorio:
+            sucesso = _gerar_relatorio(conexao, args.relatorio)
+            if not sucesso and codigo_saida == 0:
+                codigo_saida = 4
     finally:
         if meu_client is not None:
             meu_client.close()

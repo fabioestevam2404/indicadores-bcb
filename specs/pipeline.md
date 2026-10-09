@@ -7,6 +7,19 @@ já estão implementados e testados (lidos diretamente de
 Este é o primeiro módulo que **orquestra** os outros três; até aqui cada
 um era isolado e sem dependência dos demais.
 
+Atualização (09/10/2026): a CLI ganhou a geração do relatório HTML
+(`--relatorio`, `--sem-relatorio`, `--so-relatorio`) e o exit code `4`.
+O comportamento do relatório (conteúdo, escrita, log, precedência dos exit
+codes) está **definido em `specs/relatorio.md`**, seção "Integração na
+CLI"; esta spec registra apenas os pontos em que a CLI do pipeline muda e
+aponta para lá em vez de duplicar os detalhes.
+
+Atualização (09/10/2026, revisão de código): `--so-relatorio` passa a abrir
+o banco em **somente leitura** e uma falha apenas ao imprimir a mensagem de
+sucesso do relatório não altera o exit code. Decisões 12 e 14 de
+`specs/relatorio.md`; os pontos afetados abaixo (Argumentos, passos 2a e
+7.3, exit code `4`) apontam para lá.
+
 Assinaturas reais confirmadas (resumo, não reproduzido por inteiro):
 - `extracao.SERIES: dict[int, str]`, `extracao.criar_client() -> httpx.Client`,
   `extracao.FUSO_BRASILIA`,
@@ -16,7 +29,9 @@ Assinaturas reais confirmadas (resumo, não reproduzido por inteiro):
   com `ResultadoLimpeza(dados: pd.DataFrame, descartes: list[Descarte],
   series_ignoradas: list[SerieIgnorada])`, colunas de `dados` =
   `["codigo", "serie", "data", "valor"]`.
-- `persistencia.CAMINHO_PADRAO`, `persistencia.abrir_conexao(caminho=CAMINHO_PADRAO)`,
+- `persistencia.CAMINHO_PADRAO`, `persistencia.abrir_conexao(caminho=CAMINHO_PADRAO)`
+  (a partir da decisão 12 de `specs/relatorio.md` aceita também
+  `*, somente_leitura: bool = False`; ver `specs/persistencia.md`),
   `persistencia.criar_tabela(conexao)`,
   `persistencia.gravar(conexao, dados, *, atualizado_em=None) -> ResultadoGravacao`,
   com `ResultadoGravacao(inseridos, atualizados, total)`.
@@ -31,6 +46,10 @@ Este módulo não implementa nenhuma regra nova de extração, limpeza ou
 persistência — só orquestra, na ordem certa, com as dependências
 (conexão, client HTTP) sempre injetadas para permitir testes sem rede e
 sem arquivo real.
+
+Depois do resumo, a CLI gera o relatório HTML a partir do banco (a menos
+que `--sem-relatorio`), ou só o relatório com `--so-relatorio` — ver
+`specs/relatorio.md`. `executar` e `formatar_resumo` não mudam.
 
 ## Localização
 ```
@@ -206,6 +225,12 @@ Decisões de formato:
   separação decidida para permitir redirecionar/capturar o resumo
   (stdout) separadamente dos logs (stderr) em uso real de linha de
   comando.
+- A linha `Relatório gravado em: <caminho>` (quando o relatório é gerado)
+  vem **depois** do resumo, separada por uma linha em branco; seu formato
+  é definido em `specs/relatorio.md` ("Log e saída padrão") e não faz
+  parte de `formatar_resumo`. Uma falha de I/O ao imprimi-la (com o
+  arquivo já gravado) não escapa nem muda o exit code: vira `WARNING` no
+  stderr (decisão 14 de `specs/relatorio.md`).
 
 ## `__main__.py`: CLI fina
 
@@ -213,6 +238,8 @@ Decisões de formato:
 ```
 python -m indicadores [--banco CAMINHO] [--series COD [COD ...]]
                        [--data-referencia AAAA-MM-DD] [-v | -vv]
+                       [--relatorio CAMINHO]
+                       [--sem-relatorio | --so-relatorio]
 ```
 - `--banco CAMINHO` (`type=Path`, `metavar="CAMINHO"`, default
   `persistencia.CAMINHO_PADRAO` = `dados/indicadores.duckdb`) — o
@@ -236,6 +263,24 @@ python -m indicadores [--banco CAMINHO] [--series COD [COD ...]]
   `1` (`-v`) → `INFO`, `2+` (`-vv`) → `DEBUG`, aplicado por
   `_configurar_logging` — ver subseção dedicada abaixo (não usa
   `logging.basicConfig`).
+- `--relatorio CAMINHO` (`type=Path`, `metavar="CAMINHO"`, default
+  `relatorio.html`, relativo ao diretório de trabalho; mesma semântica de
+  `--banco`): onde gravar o relatório HTML. Ver `specs/relatorio.md`,
+  "Argumentos novos".
+- `--sem-relatorio` (`store_true`): não gera o relatório. `--relatorio`
+  junto com ele é aceito e ignorado.
+- `--so-relatorio` (`store_true`): só regenera o relatório a partir do
+  banco existente — sem client HTTP, sem `executar`, sem rede, sem
+  escrever no banco, que é aberto em **somente leitura**
+  (`abrir_conexao(..., somente_leitura=True)`, decisão 12 de
+  `specs/relatorio.md`; comportamento completo em `specs/relatorio.md`,
+  "Passo a passo").
+- Regras de exclusão e erro de uso (todas com exit `2`, antes de qualquer
+  recurso ser aberto):
+  - `--sem-relatorio` e `--so-relatorio` são **mutuamente exclusivos**
+    (`add_mutually_exclusive_group`; recusado pelo `argparse`).
+  - `--so-relatorio` com `--series` ou `--data-referencia` →
+    `parser.error`: esses argumentos só fazem sentido para a extração.
 
 ### Configuração de logging (decisão registrada)
 ```python
@@ -319,8 +364,16 @@ def main(argv: list[str] | None = None, *, client: httpx.Client | None = None) -
     """Ponto de entrada de `python -m indicadores`. Retorna o exit code."""
 ```
 1. `args = _parse_args(argv)` — pode levantar `SystemExit(2)` (via
-   `argparse`, entrada inválida) antes de qualquer recurso ser aberto.
+   `argparse`, entrada inválida, inclusive as combinações inválidas das
+   flags de relatório) antes de qualquer recurso ser aberto.
 2. `_configurar_logging(args.verbose)`.
+2a. Se `args.so_relatorio`: delega a `_so_relatorio(args)` e retorna o
+   exit code dele (`0` ou `4`), sem criar client nem chamar `executar` —
+   passo a passo completo em `specs/relatorio.md` ("Passo a passo"). O
+   banco é aberto em **somente leitura**
+   (`abrir_conexao(args.banco, somente_leitura=True)`, decisão 12), depois
+   de checar que o arquivo existe. Os passos 3 a 7 abaixo valem para o
+   fluxo normal, que continua abrindo o banco em leitura/escrita.
 3. `meu_client = None` e `conexao = None`, **antes** do `try` — para o
    `finally` sempre saber se há algo para fechar, mesmo que a própria
    criação do client falhe.
@@ -338,25 +391,40 @@ def main(argv: list[str] | None = None, *, client: httpx.Client | None = None) -
    falha em `abrir_conexao` (ex.: caminho inválido) e qualquer exceção
    não tratada dentro de `executar` (ex.: erro de banco durante
    `gravar`, exceção nativa do `duckdb`). Sem resumo impresso nesse
-   caminho (não há `ResumoPipeline` válido) — ver também a consequência
-   registrada na seção sobre gravação por série.
+   caminho (não há `ResumoPipeline` válido) e **sem tentar o relatório**
+   — ver também a consequência registrada na seção sobre gravação por
+   série e `specs/relatorio.md` ("Integração na CLI", decisão 5).
 6. `finally`: fecha `meu_client` **se não for `None`** (foi criado ou
    recebido com sucesso) e fecha `conexao` **se não for `None`** (isto
    é, se `abrir_conexao` chegou a suceder). Roda tanto no caminho de
    sucesso quanto no de erro; nunca tenta fechar algo que nunca chegou a
    existir (ex.: se `criar_client()` falhou, `meu_client` continua
    `None` e não é fechado).
-7. Caminho de sucesso (sem exceção nos passos 4): imprime
-   `formatar_resumo(resumo)` via `print(...)` (stdout) e retorna `0` se
-   `resumo.series_ignoradas` estiver vazio, `1` caso contrário.
+7. Caminho de sucesso (sem exceção no passo 4), executado na cláusula
+   `else` do `try` — portanto **antes** do `finally` do passo 6, com a
+   conexão ainda aberta, que o relatório reaproveita:
+   1. imprime `formatar_resumo(resumo)` via `print(...)` (stdout);
+   2. calcula o exit code: `0` se `resumo.series_ignoradas` estiver
+      vazio, `1` caso contrário;
+   3. **se não for `--sem-relatorio`**, gera o relatório a partir do banco
+      com a mesma conexão (`_gerar_relatorio(conexao, args.relatorio)`,
+      definido em `specs/relatorio.md`); se a geração falhar (a função
+      devolve `False`) e o exit code calculado for `0`, ele vira `4`; se
+      for `1`, continua `1` (a falha do relatório fica só no log, nível
+      `ERROR` no stderr). Se o relatório foi gravado e só a impressão da
+      linha `Relatório gravado em: ...` falhou (`OSError`/`UnicodeError`),
+      `_gerar_relatorio` devolve `True` com um `WARNING` no stderr e o
+      exit code **não muda** (decisão 14 de `specs/relatorio.md`);
+   4. retorna o exit code.
 
 ### Exit codes (decisão registrada)
 | Código | Situação |
 |---|---|
-| `0` | Execução completa, nenhuma série ignorada (todas as séries solicitadas foram extraídas com sucesso; descartes de linhas individuais **não** afetam o código). |
-| `1` | Execução completa, mas **pelo menos uma** série foi ignorada (falhou na extração). As demais séries, se houver, foram gravadas normalmente. |
-| `2` | Erro de uso da CLI: argumento inválido, detectado pelo `argparse` (`SystemExit(2)` nativo, repassado sem modificação). |
-| `3` | Erro inesperado durante a execução: falha ao criar o client HTTP, falha ao abrir a conexão, ou qualquer falha dentro de `executar` (incluindo erro de banco em `gravar`). |
+| `0` | Execução completa, nenhuma série ignorada (todas as séries solicitadas foram extraídas com sucesso; descartes de linhas individuais **não** afetam o código). Se o relatório foi pedido, ele também foi gravado. |
+| `1` | Execução completa, mas **pelo menos uma** série foi ignorada (falhou na extração). As demais séries, se houver, foram gravadas normalmente. **Prevalece** sobre uma eventual falha do relatório (que fica só no log). |
+| `2` | Erro de uso da CLI: argumento inválido, detectado pelo `argparse` (`SystemExit(2)` nativo, repassado sem modificação), inclusive as combinações inválidas das flags de relatório. |
+| `3` | Erro inesperado durante a execução: falha ao criar o client HTTP, falha ao abrir a conexão, ou qualquer falha dentro de `executar` (incluindo erro de banco em `gravar`). O relatório **não é tentado**. |
+| `4` | Os dados foram gravados normalmente (a execução seria `0`), mas o relatório **não pôde ser gerado ou gravado**; ou, em `--so-relatorio`, o relatório não pôde ser gerado (inclusive banco inexistente). Falha só ao **imprimir** a mensagem de sucesso, com o arquivo já gravado, não conta (decisão 14 de `specs/relatorio.md`). Definição, motivos e precedência (`3` > `1` > `4` > `0`) em `specs/relatorio.md`, "Integração na CLI". |
 
 Decisão explícita, **confirmada pelo usuário**, sobre "e se **todas** as
 séries falharem na extração?": mesmo código `1` usado para "algumas
@@ -366,12 +434,14 @@ distinção relevante é "sucesso total" (`0`) vs. "sucesso parcial ou
 total, precisa checar o resumo/log" (`1`); differenciar "algumas" de
 "todas" no exit code não muda a ação que quem chama precisa tomar
 (investigar o resumo), então não se registrou um código a mais só para
-essa distinção.
+essa distinção. (O código `4`, acrescentado depois, é para outra situação:
+falha do relatório, não da extração.)
 
 Decisão explícita: **descartes nunca mudam o exit code**. Uma linha
 descartada é um evento esperado e tratado (dado malformado pontual),
 não uma falha de execução — só `series_ignoradas` (falha da extração de
-uma série inteira) e erros inesperados (`3`) afetam o código de saída.
+uma série inteira), erros inesperados (`3`) e a falha do relatório (`4`,
+quando o resto daria `0`) afetam o código de saída.
 
 ## Regras de negócio
 1. `executar` nunca abre nem fecha `conexao`; `client`, se `None`, é
@@ -389,10 +459,12 @@ uma série inteira) e erros inesperados (`3`) afetam o código de saída.
    configuração de logging usa o logger do pacote (`"indicadores"`), não
    `logging.basicConfig`, para funcionar de forma confiável também sob
    `pytest`.
-5. Exit code reflete só falhas de série inteira (`series_ignoradas`) e
-   erros inesperados — nunca descartes de linhas individuais; e "todas
-   as séries falharam" usa o mesmo código `1` de "algumas falharam"
-   (decisão confirmada pelo usuário).
+5. Exit code reflete só falhas de série inteira (`series_ignoradas`),
+   erros inesperados e a falha do relatório (`4`, só quando o resto
+   daria `0`) — nunca descartes de linhas individuais; e "todas as séries
+   falharam" usa o mesmo código `1` de "algumas falharam" (decisão
+   confirmada pelo usuário). Falha do relatório nunca impede nem desfaz a
+   gravação dos dados (ver `specs/relatorio.md`).
 6. Nenhuma opção de linha de comando configura retry/timeout/backoff da
    extração — esses continuam fixos nas constantes de `extracao.py`
    (fora de escopo mudar isso aqui).
@@ -419,10 +491,14 @@ uma série inteira) e erros inesperados (`3`) afetam o código de saída.
   DuckDB é single-writer por arquivo; se duas instâncias da CLI forem
   executadas ao mesmo tempo com o mesmo caminho de arquivo, a segunda
   provavelmente falha ao tentar abrir o arquivo (já bloqueado pela
-  primeira) e termina com exit code `3`. Decisão: risco aceito, não
-  tratado com retry nem lock próprio — rodar a CLI de novo depois (após
-  a primeira execução terminar) é seguro, graças ao upsert idempotente
-  de `persistencia.gravar`.
+  primeira) e termina com exit code `3` (ou `4`, se for `--so-relatorio`).
+  Decisão: risco aceito, não tratado com retry nem lock próprio — rodar a
+  CLI de novo depois (após a primeira execução terminar) é seguro, graças
+  ao upsert idempotente de `persistencia.gravar`.
+- **`print` do resumo sem proteção de I/O:** a decisão 14 de
+  `specs/relatorio.md` protege só a mensagem de sucesso do relatório; uma
+  falha de I/O ao imprimir o resumo (passo 7.1) continua escapando como
+  antes. Fora do pedido aprovado.
 
 ## Dependências
 Nenhuma dependência nova: reaproveita `httpx`, `pandas`, `duckdb` já
@@ -432,8 +508,9 @@ listados em `requirements.txt` pelos módulos anteriores. `argparse` e
 ## Fora de escopo
 - Agendamento de execução (cron, `systemd timer`, etc.) — quem orquestra
   a periodicidade é externo a este projeto.
-- Exportação para outros formatos (CSV, Parquet, etc.) — só grava em
-  DuckDB, como já decidido em `specs/persistencia.md`.
+- Exportação dos **dados** para outros formatos (CSV, Parquet, etc.) — só
+  grava em DuckDB, como já decidido em `specs/persistencia.md`. O
+  relatório HTML é a exceção, descrito em `specs/relatorio.md`.
 - Flags de configuração de retry, timeout ou backoff da extração —
   permanecem como constantes fixas de `extracao.py`.
 - Qualquer nova regra de negócio de extração, limpeza ou persistência —
@@ -460,12 +537,21 @@ listados em `requirements.txt` pelos módulos anteriores. `argparse` e
 6. `formatar_resumo` produz texto determinístico e legível a partir de
    um `ResumoPipeline` conhecido, incluindo os três motivos de descarte
    sempre presentes (mesmo com contagem `0`).
-7. `main` retorna `0` só quando não há série ignorada; `1` quando há
-   pelo menos uma (inclusive quando **todas** falharam); `2` para
-   entrada de CLI inválida (antes de abrir qualquer recurso); `3` para
-   erro inesperado (ex.: falha em `criar_client`, erro de banco).
+7. `main` retorna `0` só quando não há série ignorada e, se o relatório
+   foi pedido, ele foi gravado; `1` quando há pelo menos uma série
+   ignorada (inclusive quando **todas** falharam, e mesmo que o relatório
+   também falhe); `2` para entrada de CLI inválida (antes de abrir
+   qualquer recurso), inclusive `--so-relatorio` combinado com
+   `--sem-relatorio`, `--series` ou `--data-referencia`; `3` para erro
+   inesperado (ex.: falha em `criar_client`, erro de banco), sem tentar o
+   relatório; `4` quando os dados foram gravados (o resto daria `0`) mas o
+   relatório não pôde ser gerado ou gravado, ou quando `--so-relatorio`
+   não consegue gerá-lo. Uma falha apenas ao imprimir a mensagem de
+   sucesso, com o relatório gravado, não altera o exit code. Detalhes e
+   critérios do relatório em `specs/relatorio.md` (critérios de aceite 9 a
+   11 e 16).
 8. `main` sempre fecha o client e a conexão que chegaram a existir, em
-   qualquer um dos quatro caminhos de saída (`0`, `1`, `3`; `2` nem
+   qualquer um dos caminhos de saída (`0`, `1`, `3`, `4`; `2` nem
    chega a abrir recursos), inclusive quando o client foi injetado pelo
    chamador, e sem tentar fechar algo que nunca foi criado.
 9. O resumo vai para stdout; qualquer log vai para stderr; nenhum teste
@@ -480,6 +566,11 @@ listados em `requirements.txt` pelos módulos anteriores. `argparse` e
 12. Nenhum teste faz chamada de rede real ou cria arquivo `.duckdb` fora
     de `tmp_path`.
 13. Cobertura de testes do módulo (`pipeline.py` + `__main__.py`) ≥ 80%.
+14. `--relatorio CAMINHO`, `--sem-relatorio` e `--so-relatorio` existem,
+    com os defaults e a exclusão mútua descritos em "Argumentos"; o fluxo
+    de geração do relatório em `main` segue o passo 7 e
+    `specs/relatorio.md`; `--so-relatorio` abre o banco em somente
+    leitura (passo 2a).
 
 ## Casos de teste (pytest)
 1. `test_executar_grava_series_bem_sucedidas` — `MockTransport` com 2
@@ -585,6 +676,15 @@ listados em `requirements.txt` pelos módulos anteriores. `argparse` e
     `logging.getLogger("indicadores").handlers` continua com **um só**
     handler adicionado por `_configurar_logging` (não dois), e que uma
     mensagem de log não aparece duplicada em `capsys`/`caplog`.
+
+Os casos de teste das flags de relatório e do exit `4` (itens 44 a 55 de
+`specs/relatorio.md`) ficam definidos naquela spec e não são duplicados
+aqui; o mesmo vale para os casos da revisão de código de 09/10/2026 que
+tocam a CLI (itens 59, 60, 64 e 65 de `specs/relatorio.md`: banco aberto
+em somente leitura, banco inalterado byte a byte e falha só do `print` de
+sucesso sem efeito no exit code). Os testes `test_main_*` acima passam a
+usar `--sem-relatorio` ou `--relatorio <tmp_path>/r.html` (ver "Mudanças
+em outros documentos e testes existentes" em `specs/relatorio.md`).
 
 ## Convenções seguidas
 - Nomes de função e variável em português, snake_case

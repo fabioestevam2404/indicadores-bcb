@@ -48,6 +48,9 @@ Configure o `PYTHONPATH` e ative o venv conforme a seção anterior.
 - `--banco CAMINHO` (padrão: `dados/indicadores.duckdb`) — arquivo DuckDB
 - `--series COD [COD ...]` (padrão: todas as séries) — códigos SGS a buscar
 - `--data-referencia AAAA-MM-DD` (padrão: hoje em Brasília) — data de referência da janela de 5 anos
+- `--relatorio CAMINHO` (padrão: `relatorio.html`) — onde gravar o relatório HTML
+- `--sem-relatorio` — não gera o relatório HTML
+- `--so-relatorio` — só regenera o relatório a partir do banco existente (sem rede, sem alterar dados)
 - `-v` — nível INFO
 - `-vv` — nível DEBUG
 
@@ -77,6 +80,24 @@ Modo verbose:
 python -m indicadores -vv
 ```
 
+Não gerar o relatório HTML:
+
+```powershell
+python -m indicadores --sem-relatorio
+```
+
+Só regenerar o relatório a partir do banco (sem rede):
+
+```powershell
+python -m indicadores --so-relatorio
+```
+
+Especificar um caminho para o relatório (útil em testes):
+
+```powershell
+python -m indicadores --relatorio "C:\Caminho\Alternativo\relatorio.html"
+```
+
 ### Saída
 
 O resumo é impresso em stdout:
@@ -94,20 +115,37 @@ Descartes por motivo:
 
 Séries ignoradas:
   (nenhuma)
+
+Relatório gravado em: relatorio.html
 ```
 
 Os logs são emitidos em stderr no formato `NIVEL logger: mensagem`.
+
+### Relatório HTML
+
+A cada execução, um relatório HTML é gerado automaticamente (exceto com `--sem-relatorio`). O arquivo `relatorio.html` é criado na raiz do projeto e contém:
+
+- **Resumo executivo**: 4 cards com o valor atual de cada indicador (Selic meta, IPCA acumulado 12m, IPCA mensal, PTAX venda)
+- **Gráficos históricos**: um gráfico para cada indicador (últimos 5 anos), com tooltip interativo para ver dados ao passar o mouse
+- **Tabelas de análise**: mudanças da Selic, IPCA mensal + acumulado em 12 meses, e PTAX mensal
+
+O arquivo é **autocontido** (CSS e gráficos inline, sem dependências externas) e abre **offline**, sem precisar de rede. Dados em português (formato `dd/mm/aaaa`, vírgula decimal, percentuais com 2 casas). O design responde a tema claro/escuro do sistema operacional.
+
+O relatório é regenerado a cada execução normal; `--so-relatorio` permite regenerá-lo sem buscar a API. O arquivo é ignorado pelo git (`.gitignore`).
+
+Falha ao gerar o relatório nunca impede a gravação dos dados: o relatório anterior permanece intacto e o exit code reflete que houve problema apenas com o relatório (código 4), não com os dados.
 
 ### Exit codes
 
 | Código | Situação |
 |--------|----------|
-| 0 | Sucesso; nenhuma série ignorada |
+| 0 | Sucesso; nenhuma série ignorada; relatório gerado (se pedido) |
 | 1 | Execução concluída, mas pelo menos uma série falhou na extração; demais foram gravadas |
-| 2 | Argumento inválido (detectado antes de executar) |
+| 2 | Argumento inválido (detectado antes de executar), incluindo `--so-relatorio` combinado com `--sem-relatorio`, `--series` ou `--data-referencia` |
 | 3 | Erro inesperado (falha ao criar client, abrir banco ou durante a execução) |
+| 4 | Os dados foram gravados normalmente (seria código 0), mas o relatório não pôde ser gerado ou gravado; ou, em `--so-relatorio`, o banco não foi encontrado ou não pôde ser lido |
 
-**Nota**: descartes de linhas individuais não afetam o exit code.
+**Nota**: descartes de linhas individuais não afetam o exit code. Exit 4 nunca dispara nova tentativa no agendador (a falha é do relatório, não da extração).
 
 ### Limitações conhecidas
 
@@ -193,7 +231,7 @@ INFO indicadores.pipeline: executar iniciado
 
 | Código | Situação |
 |--------|----------|
-| 0–3 | Repassado da CLI (mesmos códigos de `python -m indicadores`) — da última tentativa se houver retry |
+| 0–4 | Repassado da CLI (mesmos códigos de `python -m indicadores`) — da última tentativa se houver retry |
 | 10 | venv não encontrado (`.venv\Scripts\python.exe` ausente) |
 | 11 | Falha ao iniciar o Python |
 | 12 | Falha ao preparar o log (criar diretório ou gravar cabeçalho); mensagem vai para stderr |
@@ -452,7 +490,8 @@ O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a c
 │       ├── limpeza.py               # Módulo de limpeza e tipagem
 │       ├── persistencia.py          # Módulo de persistência em DuckDB
 │       ├── pipeline.py              # Orquestração do pipeline
-│       └── analise.py               # Análises de negócio
+│       ├── analise.py               # Análises de negócio
+│       └── relatorio.py             # Relatório HTML autocontido
 ├── scripts/
 │   ├── executar_diario.ps1          # Wrapper da tarefa agendada
 │   └── agendar_tarefa.ps1           # Registra/remove a tarefa no Agendador
@@ -464,18 +503,21 @@ O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a c
 │   ├── test_pipeline.py             # Testes de orquestração
 │   ├── test_main.py                 # Testes da CLI
 │   ├── test_scripts.py              # Testes dos scripts PS (só Windows)
-│   └── test_analise.py              # Testes de análises
+│   ├── test_analise.py              # Testes de análises
+│   └── test_relatorio.py            # Testes de relatório
 ├── specs/
 │   ├── extracao.md                  # Especificação de extração
 │   ├── limpeza.md                   # Especificação de limpeza
 │   ├── persistencia.md              # Especificação de persistência
 │   ├── pipeline.md                  # Especificação do pipeline
 │   ├── agendamento.md               # Especificação do agendamento
-│   └── analise.md                   # Especificação de análises
+│   ├── analise.md                   # Especificação de análises
+│   └── relatorio.md                 # Especificação de relatório HTML
 ├── dados/                           # Diretório criado automaticamente
 │   └── indicadores.duckdb           # Arquivo de banco (ignorado pelo git)
 ├── logs/                            # Diretório de logs (ignorado pelo git)
 │   └── execucao_YYYY-MM.log         # Logs mensais da tarefa agendada
+├── relatorio.html                   # Relatório HTML (gerado a cada execução, ignorado pelo git)
 ├── requirements.txt                 # Dependências de execução (versões fixas)
 ├── pyproject.toml
 └── README.md
@@ -489,3 +531,4 @@ O GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) roda a c
 - [x] Orquestração de ponta a ponta (`pipeline.executar`)
 - [x] Agendamento no Agendador do Windows (despertar, nova tentativa em exit 1, 60 min limit)
 - [x] Análises de negócio (Mudanças Selic, IPCA 12m, PTAX mensal)
+- [x] Relatório HTML autocontido (4 cards, 4 gráficos, 3 tabelas, tema claro/escuro)

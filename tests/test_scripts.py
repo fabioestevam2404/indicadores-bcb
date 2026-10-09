@@ -319,7 +319,13 @@ def test_wrapper_nao_deixa_temporarios(tmp_path: Path, proxy_local):
         (env, ["--series", "abc"], 2),
         # Queda de rede: exit 1 + nova tentativa (4 arquivos temporários
         # criados e removidos ao longo das duas tentativas).
-        (env_queda_de_rede, ["--series", "432", "--banco", str(tmp_path / "x.duckdb")], 1),
+        # --sem-relatorio: com série ignorada o pipeline também gera o
+        # relatório, que cairia em `relatorio.html` na raiz do repositório.
+        (
+            env_queda_de_rede,
+            ["--series", "432", "--banco", str(tmp_path / "x.duckdb"), "--sem-relatorio"],
+            1,
+        ),
     ]
 
     for env_caso, args, codigo_esperado in casos:
@@ -383,8 +389,9 @@ def test_wrapper_exit_1_faz_uma_nova_tentativa(tmp_path: Path, proxy_local):
     }
     banco = tmp_path / "x.duckdb"
 
+    # --sem-relatorio: nunca escrever `relatorio.html` na raiz do repositório.
     resultado = _rodar_wrapper_com_env(
-        tmp_path, env_extra, "--series", "432", "--banco", str(banco)
+        tmp_path, env_extra, "--series", "432", "--banco", str(banco), "--sem-relatorio"
     )
 
     assert resultado.returncode == 1
@@ -554,3 +561,37 @@ def test_gitignore_ignora_logs():
     conteudo = (RAIZ / ".gitignore").read_text(encoding="utf-8")
     linhas = conteudo.splitlines()
     assert "logs/" in linhas
+
+
+def test_gitignore_ignora_relatorio_html():
+    linhas = (RAIZ / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "relatorio.html" in linhas
+    assert "relatorio.html.tmp" in linhas
+
+
+# ---------------------------------------------------------------------------
+# Exit 4 (relatório não gerado): repassado como veio, sem nova tentativa.
+# ---------------------------------------------------------------------------
+
+
+def test_wrapper_repassa_exit_4_sem_nova_tentativa(tmp_path: Path):
+    # Banco inexistente + --so-relatorio: o Python sai com 4 antes de
+    # qualquer rede ou escrita (offline e rápido).
+    banco = tmp_path / "nao_existe.duckdb"
+
+    resultado = _rodar_wrapper(
+        tmp_path,
+        "--so-relatorio",
+        "--banco",
+        str(banco),
+        "--relatorio",
+        str(tmp_path / "r.html"),
+    )
+
+    assert resultado.returncode == 4
+    texto = _conteudo_log_utf8_sem_bom(_unico_log(tmp_path))
+    assert "fim (exit code: 4)" in texto
+    assert "tentativa 2" not in texto
+    assert "AVISO: exit 1" not in texto
+    assert not banco.exists()
+    assert not (tmp_path / "r.html").exists()

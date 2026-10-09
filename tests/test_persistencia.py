@@ -613,3 +613,51 @@ def test_gravar_com_transacao_ja_aberta_levanta_erro_sem_alterar_tabela(conexao)
     assert len(lido) == 1
     assert lido.iloc[0]["codigo"] == 432
 
+
+# ---------------------------------------------------------------------------
+# Decisão 12 (relatorio.md, caso 58): abrir_conexao somente leitura
+# ---------------------------------------------------------------------------
+
+
+def test_abrir_conexao_somente_leitura(tmp_path: Path):
+    caminho = tmp_path / "banco" / "indicadores.duckdb"
+    con = abrir_conexao(caminho)
+    try:
+        criar_tabela(con)
+        gravar(
+            con,
+            _construir_dados(
+                [{"codigo": 432, "serie": "selic_meta", "data": "01/01/2020", "valor": 13.75}]
+            ),
+            atualizado_em=_dt(2025, 6, 15, 10, 0, 0),
+        )
+    finally:
+        con.close()
+
+    # (a) leitura funciona; escrita levanta o erro nativo do duckdb.
+    ro = abrir_conexao(caminho, somente_leitura=True)
+    try:
+        assert len(ler(ro)) == 1
+        with pytest.raises(duckdb.Error):
+            ro.execute("CREATE TABLE intruso (x INTEGER)")
+        with pytest.raises(duckdb.Error):
+            ro.execute("INSERT INTO intruso VALUES (1)")
+    finally:
+        ro.close()
+
+    # (c) default preserva o comportamento anterior (cria o diretório pai).
+    novo = tmp_path / "outro" / "dir" / "b.duckdb"
+    con2 = abrir_conexao(novo)
+    try:
+        assert novo.parent.is_dir()
+        con2.execute("CREATE TABLE t (x INTEGER)")
+        con2.execute("INSERT INTO t VALUES (1)")
+    finally:
+        con2.close()
+
+    # (b) inexistente: erro e nada criado (nem arquivo, nem diretório pai).
+    ausente = tmp_path / "nao_existe_dir" / "x.duckdb"
+    with pytest.raises(duckdb.Error):
+        abrir_conexao(ausente, somente_leitura=True)
+    assert not ausente.exists()
+    assert not ausente.parent.exists()

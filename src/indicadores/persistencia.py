@@ -74,12 +74,22 @@ def _agora_brasilia() -> datetime:
     return datetime.now(FUSO_BRASILIA).replace(tzinfo=None)
 
 
-def abrir_conexao(caminho: str | Path = CAMINHO_PADRAO) -> duckdb.DuckDBPyConnection:
+def abrir_conexao(
+    caminho: str | Path = CAMINHO_PADRAO,
+    *,
+    somente_leitura: bool = False,
+) -> duckdb.DuckDBPyConnection:
     """Abre (ou cria) o arquivo DuckDB em `caminho`.
 
     Cria o diretório pai de `caminho` se não existir, exceto quando
     `caminho == ":memory:"`. Não chama `criar_tabela` automaticamente.
+
+    Com `somente_leitura=True` abre com `read_only=True`: não cria o
+    diretório nem o arquivo (arquivo inexistente é erro nativo do DuckDB)
+    e qualquer escrita na conexão levanta o erro nativo do driver.
     """
+    if somente_leitura:
+        return duckdb.connect(str(caminho), read_only=True)
     if str(caminho) != ":memory:":
         Path(caminho).parent.mkdir(parents=True, exist_ok=True)
     return duckdb.connect(str(caminho))

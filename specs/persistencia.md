@@ -8,6 +8,10 @@ implementados. Este módulo consome `ResultadoLimpeza.dados` (o
 `datetime64[ns]`, `float64` (conferido lendo `src/indicadores/limpeza.py`).
 Segue o mesmo formato de `specs/extracao.md` e `specs/limpeza.md`.
 
+Atualização (09/10/2026): `abrir_conexao` ganhou o parâmetro opcional
+`somente_leitura` (decisão 12 de `specs/relatorio.md`), usado por
+`--so-relatorio`. É a única mudança; o restante do módulo não muda.
+
 ## Objetivo
 Gravar os dados limpos em DuckDB, em uma tabela única, com upsert por
 `(codigo, data)` — cada execução busca de novo os últimos 5 anos, e o
@@ -24,8 +28,8 @@ persistência) — isso é uma etapa separada, fora de escopo aqui.
 src/indicadores/persistencia.py
 ```
 Testes em `tests/test_persistencia.py`, todos usando
-`duckdb.connect(":memory:")` (exceto o teste específico de
-`abrir_conexao`, que usa `tmp_path` do pytest para um arquivo real em
+`duckdb.connect(":memory:")` (exceto os testes específicos de
+`abrir_conexao`, que usam `tmp_path` do pytest para um arquivo real em
 diretório temporário). Nenhum teste cria arquivo `.duckdb` fora de
 `tmp_path`.
 
@@ -109,17 +113,38 @@ isso o resultado não é só um `int`, e sim `ResultadoGravacao`. Ver
 
 ### Abertura de conexão
 ```python
-def abrir_conexao(caminho: str | Path = CAMINHO_PADRAO) -> duckdb.DuckDBPyConnection:
+def abrir_conexao(
+    caminho: str | Path = CAMINHO_PADRAO,
+    *,
+    somente_leitura: bool = False,
+) -> duckdb.DuckDBPyConnection:
     """Abre (ou cria) o arquivo DuckDB em `caminho`.
 
-    Cria o diretório pai de `caminho` se não existir
-    (`Path(caminho).parent.mkdir(parents=True, exist_ok=True)`), exceto
-    quando `caminho == ":memory:"` (sem diretório pai a criar). Não
-    chama `criar_tabela` automaticamente — isso é responsabilidade de
-    quem orquestra (chamar `criar_tabela` uma vez por conexão antes de
-    `gravar`).
+    Padrão (`somente_leitura=False`): cria o diretório pai de `caminho`
+    se não existir (`Path(caminho).parent.mkdir(parents=True,
+    exist_ok=True)`), exceto quando `caminho == ":memory:"` (sem
+    diretório pai a criar), e abre em leitura/escrita
+    (`duckdb.connect(str(caminho))`). Não chama `criar_tabela`
+    automaticamente — isso é responsabilidade de quem orquestra (chamar
+    `criar_tabela` uma vez por conexão antes de `gravar`).
+
+    `somente_leitura=True`: abre com `duckdb.connect(str(caminho),
+    read_only=True)`. **Não** cria o diretório pai nem o arquivo: se o
+    arquivo não existir, o erro nativo do DuckDB propaga. Qualquer escrita
+    nessa conexão (`INSERT`, `CREATE TABLE`, `gravar`, `criar_tabela`)
+    levanta o erro nativo do DuckDB. Não suportado com `":memory:"`
+    (erro nativo do DuckDB; sem tratamento nem teste).
     """
 ```
+Decisão registrada (decisão 12 de `specs/relatorio.md`): o parâmetro é
+**keyword-only** e o default `False` preserva integralmente o
+comportamento anterior, então nenhum chamador existente muda. O único
+usuário de `somente_leitura=True` é `--so-relatorio`, para que "nunca
+escreve no banco" seja garantido pelo próprio DuckDB (em leitura/escrita
+ele pode reaplicar o WAL e fazer checkpoint, alterando o arquivo mesmo
+sem nenhum `INSERT`). Não verificado: o comportamento de `read_only` com
+um `.wal` pendente (execução anterior encerrada à força); se a abertura
+falhar, quem chama trata como erro de abertura.
 
 ### Criação de tabela (idempotente)
 ```python
@@ -382,6 +407,9 @@ para manter a validação simples e não redundante com o contrato de
 8. Falha do próprio `ROLLBACK` (cenário raro) nunca é a exceção que
    chega a quem chamou `gravar` — é logada e suprimida; a exceção
    original sempre prevalece.
+9. `abrir_conexao(..., somente_leitura=True)` nunca cria diretório nem
+   arquivo e nunca permite escrita; sem o parâmetro, o comportamento é o
+   de sempre (decisão 12 de `specs/relatorio.md`).
 
 ## Dependências
 `requirements.txt` hoje contém `httpx`, `pytest`, `pytest-cov`, `ruff`,
@@ -437,8 +465,8 @@ listado** — o implementer precisa adicionar a linha `duckdb` a
 11. `ler` devolve DataFrame com as colunas e dtypes explícitos
     documentados (incluindo `atualizado_em`), ordenado por `codigo` e
     `data`, inclusive quando a tabela está vazia.
-12. Todos os testes usam `duckdb.connect(":memory:")`, exceto o teste de
-    `abrir_conexao`, que usa um arquivo real dentro de `tmp_path`.
+12. Todos os testes usam `duckdb.connect(":memory:")`, exceto os de
+    `abrir_conexao`, que usam um arquivo real dentro de `tmp_path`.
 13. Se o próprio `ROLLBACK` falhar dentro do tratamento de erro de
     `gravar`, essa falha é logada (`logger.exception`,
     `indicadores.persistencia`) e suprimida; a exceção que propaga para
@@ -449,6 +477,10 @@ listado** — o implementer precisa adicionar a linha `duckdb` a
 15. Chamar `gravar` em uma conexão com uma transação já aberta levanta o
     erro nativo do DuckDB no `BEGIN`, sem alterar a tabela.
 16. Cobertura de testes do módulo ≥ 80%.
+17. `abrir_conexao(caminho, somente_leitura=True)` abre em modo
+    `read_only` (escrita levanta o erro nativo do `duckdb`), não cria
+    diretório nem arquivo inexistente, e o default (`False`) preserva o
+    comportamento do critério 10.
 
 ## Casos de teste (pytest)
 1. `test_criar_tabela_e_idempotente` — chama `criar_tabela` duas vezes
@@ -547,6 +579,10 @@ listado** — o implementer precisa adicionar a linha `duckdb` a
     `gravar`; assert que `gravar` levanta o erro nativo do `duckdb` (não
     `ErroPersistencia`) e que a tabela `indicadores` permanece sem
     nenhuma linha da chamada depois do erro.
+21. `test_abrir_conexao_somente_leitura` — arquivo real em `tmp_path`;
+    definido por inteiro como caso 58 de `specs/relatorio.md` (conexão
+    somente leitura lê mas rejeita escrita; caminho inexistente não cria
+    arquivo nem diretório; default preserva o comportamento do caso 11).
 
 ## Convenções seguidas
 - Nomes de função, variável e coluna em português, snake_case
@@ -554,7 +590,7 @@ listado** — o implementer precisa adicionar a linha `duckdb` a
   identificadores da API do driver (`duckdb.DuckDBPyConnection`) e da
   biblioteca padrão.
 - Nenhum teste cria arquivo `.duckdb` fora de `tmp_path` (todos usam
-  `:memory:`, exceto o teste de `abrir_conexao`).
+  `:memory:`, exceto os de `abrir_conexao`).
 - Dtypes sempre aplicados de forma explícita nas fronteiras de
   entrada/saída deste módulo (mesma convenção de `limpeza.py`), nunca
   deixados para a inferência padrão do driver `duckdb` ou do pandas.
