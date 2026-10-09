@@ -11,11 +11,23 @@ I/O): exit codes `0` (sucesso total), `1` (alguma série ignorada), `2`
 (dados gravados, mas o relatório HTML não pôde ser gerado — ver
 `specs/relatorio.md`); resumo sempre em stdout, logs sempre em stderr.
 
+Atualização (09/10/2026): o usuário decidiu ver o relatório HTML no
+celular via OneDrive; isso gerou a decisão 8 e a seção "Cópia do
+relatório para a pasta de destino", que acrescentam uma etapa final ao
+wrapper. O desenho dessa etapa (regras de quando copiar, destino,
+atomicidade, tratamento de falha) foi proposto pelo orquestrador a partir
+do pedido do usuário e **ainda não foi aprovado explicitamente por ele**;
+as dúvidas em aberto estão listadas em "Limitações conhecidas" e na
+própria seção.
+
 ## Objetivo
 Rodar `python -m indicadores` automaticamente, todo dia útil às 16:00,
 com o usuário logado, registrando cada execução (comando, saída, exit
 code, horário) em um log mensal legível, sem exigir que ninguém abra um
-terminal manualmente.
+terminal manualmente. Ao final, quando o relatório HTML foi regenerado
+nessa execução, o wrapper o copia para uma pasta de destino configurável
+(padrão: uma pasta dentro do OneDrive), para que o usuário o veja no
+celular (decisão 8; ver "Cópia do relatório para a pasta de destino").
 
 Não há nenhuma lógica nova de negócio aqui — só agendamento e um
 wrapper fino que invoca a CLI já pronta e captura sua saída de forma
@@ -55,6 +67,24 @@ quando o pipeline termina com exit 1".
    evita depender do despertar. O BCB já publica a PTAX do dia por volta
    das 13h, então 16:00 continua capturando o dado do dia. O
    `-WakeToRun` e as demais configurações permanecem como estão.
+8. **O relatório HTML deve poder ser visto no celular via OneDrive**
+   (decisão do usuário de **09/10/2026**). Consequência nesta spec: ao
+   final do wrapper, depois da última tentativa do pipeline, o
+   `relatorio.html` da raiz do repositório é **copiado** para uma pasta de
+   destino (variável `INDICADORES_DESTINO_RELATORIO`; se ausente,
+   `%OneDrive%\indicadores-bcb`), desde que tenha sido regenerado nesta
+   execução e o exit final seja `0` ou `1`. A cópia é atômica, acontece
+   uma única vez, e **uma falha nela nunca altera o exit code do wrapper
+   nem dispara nova tentativa** — só vira `AVISO` no log. Detalhes e
+   motivos na seção "Cópia do relatório para a pasta de destino". A parte
+   decidida pelo usuário é o objetivo (ver no celular, via OneDrive); as
+   regras detalhadas foram definidas pelo orquestrador e aprovadas em
+   09/10/2026, com estas resoluções: troca atômica com
+   `[IO.File]::Replace` quando o destino existe (terceiro argumento
+   `[NullString]::Value`, pois `$null` vira string vazia no PowerShell
+   5.1) e `[IO.File]::Move` quando não existe; destino relativo em
+   `INDICADORES_DESTINO_RELATORIO` não é copiado e gera `AVISO` (o caminho
+   precisa ser absoluto); exit `1` com relatório não regenerado não copia.
 
 ## Localização
 ```
@@ -76,7 +106,10 @@ code do processo Python (ou um código de infraestrutura distinto — ver
 "Exit codes do wrapper" — se o problema for antes de conseguir rodar o
 Python). Se o Python terminar com exit `1`, repete a execução uma única
 vez após uma espera, e o exit code final é o da última tentativa
-executada.
+executada. Depois da última tentativa, e antes do rodapé, copia o
+relatório HTML para a pasta de destino quando as condições da seção
+"Cópia do relatório para a pasta de destino" se cumprem — sem nunca mudar
+o exit code por causa disso.
 
 ### Resolução da raiz do repositório e do Python
 ```powershell
@@ -107,15 +140,23 @@ setadas no processo PowerShell **antes** de `Start-Process`, o processo
 filho as herda normalmente (comportamento padrão de herança de
 ambiente do Windows, não precisa de flag adicional).
 
-Variáveis de ambiente **lidas** pelo wrapper (não repassadas ao Python),
-ambas pensadas para os testes:
-- `INDICADORES_LOG_DIR` — diretório do log (ver "Log mensal").
+Variáveis de ambiente **lidas** pelo wrapper (não repassadas ao Python):
+- `INDICADORES_LOG_DIR` — diretório do log (ver "Log mensal"); pensada
+  para os testes.
 - `INDICADORES_ESPERA_RETRY_SEGUNDOS` — espera antes da nova tentativa
-  (ver "Nova tentativa quando o pipeline termina com exit 1").
+  (ver "Nova tentativa quando o pipeline termina com exit 1"); pensada
+  para os testes.
+- `INDICADORES_DESTINO_RELATORIO` — pasta de destino da cópia do
+  relatório (ver "Cópia do relatório para a pasta de destino"). **Ao
+  contrário das duas anteriores, é configuração de uso real**, não só de
+  teste (os testes a usam para apontar para `tmp_path`).
+- `OneDrive` — variável padrão do Windows (pasta raiz do OneDrive do
+  usuário), lida só como destino padrão da cópia do relatório; o wrapper
+  nunca a define.
 
 ### Repasse de argumentos extras
-O script não declara nenhum `param()` próprio — tudo que vier depois de
-`-File scripts\executar_diario.ps1` cai na variável automática `$args`
+O script não declara nenhum `param()` próprio — tudo que vier depois
+de `-File scripts\executar_diario.ps1` cai na variável automática `$args`
 do PowerShell, e é repassado integralmente para
 `python -m indicadores`:
 ```powershell
@@ -267,9 +308,16 @@ cai no exit `13` — ver "Exit codes do wrapper".)
      `--- stdout (tentativa 2) ---` + texto e
      `--- stderr (tentativa 2) ---` + texto (mesmas regras de leitura e
      de `AVISO` por falha de leitura dos blocos da tentativa 1).
-  6. Rodapé: `===== <AAAA-MM-DD HH:mm:ss> - fim (exit code: <N>)
+  6. **Somente se o Python chegou a rodar e o exit final é `0` ou `1`:**
+     as linhas da etapa de cópia do relatório (ver "Cópia do relatório
+     para a pasta de destino"): `Relatório copiado para: <caminho>`, ou
+     `Relatório não copiado: ...` (informativa), ou
+     `AVISO: relatório não copiado: ...` / `AVISO: falha ao copiar
+     relatório para '<destino>': <mensagem>`. Sempre **depois** dos blocos
+     de stdout/stderr da última tentativa e **antes** do rodapé.
+  7. Rodapé: `===== <AAAA-MM-DD HH:mm:ss> - fim (exit code: <N>)
      =====`, com o exit code **final** (o da última tentativa
-     executada).
+     executada; a etapa de cópia nunca o altera).
   Se o wrapper falha **antes** de conseguir rodar o Python (ex.: venv
   ausente), os blocos de stdout/stderr do Python são omitidos, e o
   rodapé registra o exit code de infraestrutura correspondente com uma
@@ -304,11 +352,11 @@ cai no exit `13` — ver "Exit codes do wrapper".)
 ### Exit codes do wrapper
 | Código | Situação |
 |---|---|
-| `0`–`4` | Repassado **exatamente** como veio do processo Python (`$processo.ExitCode`) da **última tentativa executada** — mesma semântica de `specs/pipeline.md`/`__main__.py` (o `4` é "dados gravados, relatório não gerado", definido em `specs/relatorio.md`). Só o exit `1` provoca uma nova tentativa; `0`, `2`, `3` e `4` encerram o wrapper de imediato. O wrapper **não muda** por causa do `4`: ele já repassa qualquer inteiro como veio e só repete no `1`. |
+| `0`–`4` | Repassado **exatamente** como veio do processo Python (`$processo.ExitCode`) da **última tentativa executada** — mesma semântica de `specs/pipeline.md`/`__main__.py` (o `4` é "dados gravados, relatório não gerado", definido em `specs/relatorio.md`). Só o exit `1` provoca uma nova tentativa; `0`, `2`, `3` e `4` encerram o wrapper de imediato. O wrapper **não muda** por causa do `4`: ele já repassa qualquer inteiro como veio e só repete no `1`. A etapa de cópia do relatório (decisão 8) **não altera** este código em nenhuma hipótese. |
 | `10` | `.venv\Scripts\python.exe` não encontrado — infraestrutura local ausente, o Python nunca chega a rodar. |
 | `11` | Falha ao iniciar o processo Python via `Start-Process` (ex.: exceção do próprio PowerShell antes de conseguir spawnar o processo); **ou** `$processo.ExitCode` vem `$null` — cenário raro relatado em alguns ambientes de PowerShell 5.1 com `-PassThru`. Vale para qualquer das tentativas (inclusive a segunda: se a nova tentativa não consegue nem iniciar, o exit final é `11`, não `1`). |
 | `12` | Não foi possível **preparar o log**: falha ao criar o diretório de log (`New-Item -ItemType Directory`) ou falha ao gravar o cabeçalho inicial (a primeira escrita via `AppendAllText`). Nesse caso a mensagem de erro vai para **stderr** do próprio wrapper, porque o arquivo de log não existe ou não pôde ser preparado para receber a mensagem. |
-| `13` | **Erro inesperado no wrapper depois que o log foi preparado** — por exemplo disco cheio ao gravar no log, falha ao criar um arquivo temporário (`GetTempFileName`) ou qualquer outra exceção não tratada depois da gravação do cabeçalho. O wrapper registra `ERRO: <mensagem>` e o rodapé no log (melhor esforço; se a gravação no log falhar, a mensagem vai para stderr, como no `12`) e termina com `13`. Se o exit code do Python da tentativa em curso já era conhecido, a mensagem o informa ("exit do pipeline: N"), para não perder essa informação. |
+| `13` | **Erro inesperado no wrapper depois que o log foi preparado** — por exemplo disco cheio ao gravar no log, falha ao criar um arquivo temporário (`GetTempFileName`) ou qualquer outra exceção não tratada depois da gravação do cabeçalho. O wrapper registra `ERRO: <mensagem>` e o rodapé no log (melhor esforço; se a gravação no log falhar, a mensagem vai para stderr, como no `12`) e termina com `13`. Se o exit code do Python da tentativa em curso já era conhecido, a mensagem o informa ("exit do pipeline: N"), para não perder essa informação. A etapa de cópia do relatório **não** pode produzir este código: ela tem `try/catch` próprio (ver "Cópia do relatório para a pasta de destino"). |
 
 Decisão registrada: os códigos de infraestrutura do **wrapper**
 começam em `10`, deliberadamente fora da faixa `0`–`4` já usada pelo
@@ -473,7 +521,123 @@ estoura a partir de **18 séries** (`183 x 17 + 310 = 3421 s` cabe;
 responsabilidade é de quem altera a variável (uso previsto: só testes,
 com `0`). A conta não cobre uma resposta que chegue aos poucos (o
 timeout de leitura reinicia a cada pedaço recebido): nesse caso o
-`ExecutionTimeLimit` é a rede de segurança final.
+`ExecutionTimeLimit` é a rede de segurança final. (A cópia do relatório,
+que acontece depois, copia um arquivo local de algumas centenas de KB e
+não muda esta conta de forma relevante; ver "Limitações conhecidas" sobre
+uma cópia que trave.)
+
+### Cópia do relatório para a pasta de destino (decisão 8, 09/10/2026)
+
+**Contexto e motivo.** O usuário quer ver o `relatorio.html` no celular
+via OneDrive. O wrapper é o único ponto que já roda todo dia útil, no
+usuário logado, e que conhece o resultado final do pipeline; acrescentar
+uma etapa final de cópia evita uma segunda tarefa agendada e mantém a
+regra de que a CLI/o pipeline não sabem nada de OneDrive.
+Alternativas descartadas: (a) apontar `--relatorio` da CLI direto para a
+pasta do OneDrive — acopla o pipeline a um caminho do usuário, desfaz o
+default `relatorio.html` na raiz (`specs/relatorio.md`) e deixaria o
+relatório sem cópia local se a pasta estivesse indisponível; (b) uma
+segunda tarefa agendada só para copiar — dobra os pontos de falha e o
+risco de copiar um arquivo velho; (c) servir o relatório por HTTP — fora
+de escopo em `specs/relatorio.md`.
+
+"OneDrive" é **só o destino padrão**: não há nada específico de OneDrive
+no código além de ler `$env:OneDrive` para montar esse padrão. Qualquer
+outra pasta (Dropbox, pasta de rede, pen drive) funciona definindo
+`INDICADORES_DESTINO_RELATORIO`. O wrapper só copia um arquivo local;
+nenhuma credencial, token ou chamada de rede é usada.
+
+**Quando copiar (todas as condições).** A etapa roda **uma única vez**,
+depois da **última** tentativa (nunca entre a tentativa 1 e a 2) e antes
+do rodapé:
+1. o Python chegou a rodar e o exit final é `0` ou `1`. Exit `1` também
+   copia porque o pipeline gera o relatório mesmo com série ignorada
+   (`specs/relatorio.md`, "Integração na CLI", decisão 6) e o banco guarda
+   os dados das execuções anteriores, então o relatório continua útil.
+   Exit `4` **não** copia (o relatório falhou); exit `2`, `3` e os códigos
+   `10`, `11`, `12`, `13` **não** copiam (ou não houve relatório, ou o
+   estado é duvidoso — mesmo raciocínio de `specs/relatorio.md`, decisão 5
+   da integração);
+2. existe `relatorio.html` na raiz do repositório (`$repoRoot`), e
+3. `LastWriteTimeUtc` do arquivo é **maior ou igual** ao instante de
+   início da execução do wrapper (`$inicioExecucaoUtc`, capturado
+   com `[datetime]::UtcNow` no começo do script, antes do preparo do
+   log). Motivo: um `relatorio.html` de um dia anterior nunca deve ser
+   copiado como se fosse de hoje. Isso acontece, por exemplo, com
+   `--sem-relatorio`, com `--so-relatorio` que falhou, com exit `1` em que
+   a geração do relatório falhou (a falha fica só no log,
+   `specs/relatorio.md`, decisão 11) ou com `--relatorio` apontando para
+   outro caminho. A comparação usa o relógio da própria máquina nos dois
+   lados (o instante de início e a data de modificação do arquivo).
+
+Se o exit final é `0` ou `1` mas as condições 2 ou 3 falham, o wrapper
+grava no log uma linha **informativa, sem prefixo `AVISO`**:
+`Relatório não copiado: relatorio.html não foi regenerado nesta execução`,
+e não faz mais nada (o destino nem é resolvido). Para os demais exit
+codes, a etapa não escreve nada.
+
+**Pasta de destino.** Resolvida nesta ordem, no momento da cópia:
+1. `$env:INDICADORES_DESTINO_RELATORIO`, se definida e **não vazia**
+   (`[string]::IsNullOrWhiteSpace` falso). É usada **como está** — a
+   variável aponta para a pasta final; o wrapper não acrescenta
+   `indicadores-bcb` a ela. Se a cópia para esse destino falhar, **não há
+   fallback** para o OneDrive (um destino configurado explicitamente que
+   falha deve aparecer no log, não ser trocado em silêncio).
+2. senão, `Join-Path $env:OneDrive "indicadores-bcb"`, se `$env:OneDrive`
+   estiver definida e não vazia.
+3. senão, **não copia** e grava no log
+   `AVISO: relatório não copiado: INDICADORES_DESTINO_RELATORIO não está definida e a variável OneDrive não existe`.
+
+O destino é esperado como caminho absoluto; o tratamento de caminho
+relativo não é especificado (ver dúvidas em aberto).
+
+**Como copiar (atômica).** O cliente de sincronização não pode enviar um
+arquivo pela metade, e um leitor (o celular) não pode ver um arquivo
+truncado:
+1. cria a pasta de destino se não existir (`New-Item -ItemType Directory
+   -Force`), inclusive pastas intermediárias;
+2. copia `relatorio.html` da raiz para `<destino>\relatorio.html.tmp`
+   (`Copy-Item -Force`);
+3. substitui `<destino>\relatorio.html` pelo temporário numa operação de
+   renomeação (`Move-Item -Force`, ou `[System.IO.File]::Replace` quando o
+   destino já existe e `Move` quando não existe — a escolha é do
+   implementer, o critério é: **o nome final nunca contém um arquivo
+   parcial**);
+4. em qualquer falha nos passos 1–3, remove `<destino>\relatorio.html.tmp`
+   (melhor esforço, erro ao remover suprimido) antes de registrar o
+   `AVISO`. O `relatorio.html` anterior do destino fica intacto.
+O nome do arquivo no destino é sempre `relatorio.html` (sem data no nome:
+o celular sempre abre o mesmo arquivo; o "Gerado em" dentro do HTML
+identifica a data). O temporário fica na **mesma pasta** do destino para
+que a renomeação seja no mesmo volume.
+
+**Log.** Em caso de sucesso: `Relatório copiado para: <caminho completo
+do arquivo no destino>`. Em caso de falha:
+`AVISO: falha ao copiar relatório para '<destino>': <mensagem>`, em que
+`<destino>` é a **pasta** de destino resolvida e `<mensagem>` é
+`$_.Exception.Message`. As linhas vão no mesmo bloco do log, entre os
+blocos da última tentativa e o rodapé (ver "Log mensal").
+
+**Isolamento de falhas (decisão registrada, com motivo).**
+- A etapa inteira — resolução do destino, comparação de datas, cópia,
+  limpeza **e a própria gravação das linhas no log** — fica num
+  `try/catch` próprio, **dentro** do `try` de topo, de modo que nenhuma
+  exceção dela chega ao `catch` que gera o exit `13`. Se a gravação de
+  uma linha no log falhar dentro da etapa, o erro é suprimido (o próximo
+  `Write-Log` do rodapé, se também falhar, cai no `13` de sempre — isso
+  seria uma falha do log, não da cópia).
+- Falha na cópia **não altera o exit code** do wrapper: os dados e o
+  relatório local estão corretos, e o Agendador continua mostrando o
+  resultado do pipeline (`0`–`4`). Uma falha só da cópia não deve nem
+  mascarar um `0` com um código de erro, nem trocar o `1` por outro.
+- Falha na cópia **não dispara nova tentativa**: o pipeline não tem nada
+  a ver com isso (e a cópia só acontece depois da última tentativa). A
+  próxima execução diária copia o relatório de novo.
+- A cópia não tem timeout próprio (um arquivo local de poucas centenas de
+  KB); o `ExecutionTimeLimit` da tarefa é a rede de segurança final.
+
+**Relação com os exit codes.** A tabela de "Exit codes do wrapper" não
+muda: a etapa nunca produz `10`–`13` nem altera um `0`–`4`.
 
 ### Limitações conhecidas
 - **`finally` e `exit` dentro de `try`/`catch`:** o bloco `finally` que
@@ -539,6 +703,10 @@ timeout de leitura reinicia a cada pedaço recebido): nesse caso o
   transações próprias com upsert (`specs/pipeline.md`), então se espera
   que uma interrupção deixe no máximo séries já commitadas e a
   execução seguinte complete o restante — **não verificado por teste**.
+  Se a interrupção ocorrer entre o fim do pipeline e o fim da cópia do
+  relatório, o destino fica com o relatório anterior (ou um
+  `relatorio.html.tmp` órfão na pasta de destino, que a cópia seguinte
+  sobrescreve); o mesmo vale para os demais encerramentos forçados.
 - **Não resolvido: histórico do Agendador desativado por padrão.** No
   Windows, o histórico de tarefas do Agendador vem desativado; sem ele,
   o Agendador só guarda o "Resultado da última execução" e não há trilha
@@ -561,6 +729,53 @@ timeout de leitura reinicia a cada pedaço recebido): nesse caso o
   condição chega a atrasar o início, e por quanto tempo o Agendador
   espera a rede antes de desistir da execução do dia) deve ser
   confirmado em uso real, **com o histórico do Agendador ativado**.
+- **Cópia do relatório: "copiado" não é "sincronizado" (decisão 8).** A
+  linha `Relatório copiado para: ...` só garante que o arquivo está na
+  pasta local de destino. O wrapper não verifica se o cliente de
+  sincronização (OneDrive) enviou o arquivo, nem quando o celular o
+  receberá; se o OneDrive estiver pausado, sem rede ou com a opção
+  "arquivos sob demanda" no celular, o celular continua mostrando o
+  relatório anterior até a sincronização. O "Gerado em" dentro do HTML
+  mostra a data do relatório que está sendo visto.
+- **Cópia do relatório: o `.tmp` pode ser sincronizado.** O
+  `relatorio.html.tmp` existe na pasta sincronizada por alguns
+  milissegundos e o cliente pode chegar a enviá-lo antes da renomeação.
+  Aceito: o nome final nunca fica com conteúdo parcial; o `.tmp` é
+  removido (ou renomeado) em seguida. Não verificado com o OneDrive real.
+- **Cópia do relatório: substituição do arquivo existente.** Não está
+  verificado, no Windows PowerShell 5.1, se `Move-Item -Force` sobre um
+  arquivo existente é uma substituição atômica ou uma remoção seguida de
+  renomeação (com uma janela mínima sem o arquivo). O implementer deve
+  conferir; `[System.IO.File]::Replace` é a alternativa quando o destino
+  existe. Em qualquer dos dois casos o nome final nunca fica com conteúdo
+  parcial.
+- **Cópia do relatório: arquivo bloqueado.** Se o cliente de
+  sincronização, o navegador ou o app que abriu o arquivo no PC mantiver
+  `relatorio.html` do destino aberto sem compartilhamento, a
+  substituição falha: vira `AVISO` no log, sem nova tentativa; a próxima
+  execução diária tenta de novo.
+- **Cópia do relatório: variáveis de ambiente na tarefa agendada.** Para
+  a tarefa (`Interactive`, `RunLevel Limited`) usar
+  `INDICADORES_DESTINO_RELATORIO`, ela precisa existir no ambiente do
+  usuário de forma persistente (variável de usuário) antes de o processo
+  ser iniciado; `$env:OneDrive` normalmente existe na sessão do usuário.
+  **Não verificado** que o processo iniciado pelo Agendador recebe essas
+  variáveis (a verificar na primeira execução real: o log mostra
+  `Relatório copiado para: ...` ou o `AVISO` de destino ausente).
+- **Cópia do relatório: só a raiz do repositório.** O wrapper procura
+  sempre `<raiz>\relatorio.html`. Se o usuário passar `--relatorio
+  outro.html` ao wrapper, o arquivo da raiz não é regenerado e a etapa
+  registra "não foi regenerado nesta execução" (nada é copiado).
+- **Cópia do relatório: visualização no celular é verificação manual.**
+  O app do OneDrive no celular pode exibir um arquivo HTML como texto ou
+  oferecer só o download, em vez de renderizá-lo; a forma de ver o
+  relatório pode exigir "Abrir em…" e escolher um navegador. O JS do
+  tooltip (`specs/relatorio.md`) depende do navegador usado e de a
+  visualização permitir scripts; o relatório continua legível sem JS.
+  Nada disso é testável aqui. **Não verificado** em celular real.
+- **Cópia do relatório: privacidade.** O relatório contém só séries
+  públicas do BCB, mas passa a viver numa conta de nuvem do usuário;
+  cabe a ele escolher a pasta de destino.
 
 ### Fora de escopo (deste script)
 - Rotação/limpeza automática de logs antigos — decisão explícita: não
@@ -578,6 +793,11 @@ timeout de leitura reinicia a cada pedaço recebido): nesse caso o
   pipeline) — a condição de rede do Agendador e a nova tentativa são as
   únicas medidas desta spec.
 - Teto para `INDICADORES_ESPERA_RETRY_SEGUNDOS`.
+- Da cópia do relatório: verificar se o OneDrive sincronizou, nova
+  tentativa de cópia, guardar histórico de relatórios (arquivos com data
+  no nome), copiar outros arquivos (banco, logs), notificar falha de
+  cópia, configurar o OneDrive ou o app do celular, usar API/credencial
+  de nuvem e tratar caminho de destino relativo.
 
 ## `scripts/agendar_tarefa.ps1`
 
@@ -726,6 +946,17 @@ com a variável de ambiente `INDICADORES_LOG_DIR` apontando para
 `tmp_path` (repassada via `env=` do `subprocess.run`, herdando o resto
 do ambiente do processo de teste).
 
+**Salvaguarda contra a cópia do relatório (decisão 8):** o `env=` de
+**todos** os testes do wrapper (os existentes e os novos) remove
+`OneDrive`, `OneDriveConsumer`, `OneDriveCommercial` e
+`INDICADORES_DESTINO_RELATORIO` do ambiente herdado; os testes que
+precisam de destino definem `INDICADORES_DESTINO_RELATORIO` (ou
+`OneDrive`) apontando para uma pasta dentro de `tmp_path`. Assim,
+nenhum teste escreve no OneDrive real do desenvolvedor, nem os que não
+tratam da cópia. Os testes existentes não regeneram o `relatorio.html` da
+raiz (`--help`, `--sem-relatorio` ou `--relatorio <tmp_path>\r.html`, ver
+`specs/relatorio.md`), então não chegam a copiar nada.
+
 ### Provocar exit 1 offline, com um proxy local próprio (queda de rede simulada)
 Os testes da nova tentativa precisam de um exit `1` real do pipeline
 sem rede. Técnica: rodar o wrapper com `HTTPS_PROXY` e `HTTP_PROXY`
@@ -780,6 +1011,42 @@ Detalhes registrados:
   tentativa leva por volta de 8-10 s no total (estimativa); com as 3
   séries seriam +3 s por tentativa.
 
+### Árvore falsa do repositório, para a cópia do relatório (decisão 8)
+Os testes da cópia precisam controlar **qual exit code** o "pipeline"
+devolve, **se** ele regenera `relatorio.html` e **quantas vezes** roda,
+sem rede, sem DuckDB e sem tocar no `relatorio.html` real da raiz. O
+wrapper resolve tudo a partir de `Split-Path -Parent $PSScriptRoot`,
+então os testes montam, em `tmp_path\repo` (fixture `arvore_falsa`, escopo
+de função), uma raiz de repositório própria:
+- `scripts\executar_diario.ps1`: **cópia** do script real (o que está sob
+  teste);
+- `.venv\Scripts\python.exe`: um interpretador Python executável de
+  verdade. **A confirmar pelo implementer:** a forma de obtê-lo; a opção
+  esperada é copiar para essa posição o `python.exe` do venv do projeto
+  junto com o `pyvenv.cfg` (que fica um nível acima de `Scripts`), o que
+  em geral basta para o *launcher* do venv achar a instalação base. Se
+  não funcionar, qualquer outra forma de ter `.venv\Scripts\python.exe`
+  que execute `python -m indicadores` com o `PYTHONPATH` do wrapper serve;
+- `src\indicadores\__init__.py` e `src\indicadores\__main__.py`
+  **falsos**, só da árvore de teste (o wrapper define
+  `PYTHONPATH=<raiz>\src`, então o Python da árvore carrega o pacote
+  falso, não o real). O falso lê duas variáveis de ambiente do teste:
+  `FALSO_EXITS` (lista separada por vírgulas, um exit code por tentativa;
+  o último valor vale para tentativas além do tamanho da lista, ex.
+  `"1,0"`) e `FALSO_GERA_RELATORIO` (`"1"`: grava `relatorio.html` no
+  diretório de trabalho, que o wrapper define como a raiz da árvore, com
+  um marcador de conteúdo `tentativa=<n>`; `"0"`: não grava nada). O
+  número da tentativa vem de um arquivo contador dentro de `tmp_path`.
+  Imprime algo curto em stdout e termina com o exit code escolhido.
+  Não importa `httpx`, `duckdb` nem `pandas`.
+
+O `env=` desses testes define `INDICADORES_LOG_DIR=<tmp_path>\logs`,
+`INDICADORES_ESPERA_RETRY_SEGUNDOS=0` e as variáveis do falso, e aplica a
+salvaguarda de ambiente descrita acima (nenhuma variável do OneDrive real
+herdada). Cada execução leva cerca de 1–2 s (inicialização do PowerShell e
+do Python, sem espera). O wrapper roda **sem argumentos extras** (o falso
+ignora `argv`).
+
 ### `agendar_tarefa.ps1`, só validação de sintaxe e de texto
 Sem registrar tarefa nenhuma: valida que o arquivo é PowerShell
 sintaticamente válido, via
@@ -792,7 +1059,9 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
 
 ## Regras de negócio
 1. O wrapper nunca acessa a rede nem o DuckDB diretamente — só invoca
-   `python -m indicadores` como subprocesso e captura sua saída.
+   `python -m indicadores` como subprocesso e captura sua saída. (A
+   cópia do relatório, decisão 8, só mexe em arquivos locais; nenhuma
+   rede, API ou credencial.)
 2. O exit code do wrapper é sempre o exit code do Python (`0`–`4`) da
    última tentativa executada, exceto quando o próprio wrapper falha
    antes de conseguir rodar o Python, não consegue determinar o exit
@@ -802,7 +1071,9 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
    sobrescreve execuções anteriores do mesmo mês.
 4. `INDICADORES_LOG_DIR` e `INDICADORES_ESPERA_RETRY_SEGUNDOS` só
    existem para permitir testes sem escrever em `logs/` do repositório
-   real e sem esperar 300 s.
+   real e sem esperar 300 s. `INDICADORES_DESTINO_RELATORIO` é a exceção
+   deliberada: configuração de uso real, que os testes também usam para
+   apontar para `tmp_path`.
 5. `agendar_tarefa.ps1 -Force` é idempotente: rodar de novo só
    atualiza a tarefa, nunca duplica nem falha por já existir.
 6. A tarefa nunca roda com privilégio de administrador
@@ -842,6 +1113,27 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
     da tentativa (`(tentativa 1)`, `(tentativa 2)`).
 19. O projeto não altera o plano de energia do Windows (nem
     despertadores, nem `powercfg`).
+20. O wrapper copia `relatorio.html` da raiz para a pasta de destino
+    **somente** se o exit final é `0` ou `1` e o arquivo foi regenerado
+    nesta execução (`LastWriteTimeUtc >= $inicioExecucaoUtc`); nunca para
+    `2`, `3`, `4`, `10`–`13`; nunca um arquivo de execução anterior.
+21. A cópia acontece **uma única vez**, depois da última tentativa e
+    antes do rodapé do log; nunca entre a tentativa 1 e a 2.
+22. A pasta de destino é `INDICADORES_DESTINO_RELATORIO` (definida e não
+    vazia, sem fallback se falhar; precisa ser caminho absoluto — se for
+    relativo, não copia e registra `AVISO`); senão
+    `%OneDrive%\indicadores-bcb`; senão não copia e registra `AVISO`.
+    Nada no código é específico de OneDrive além desse padrão; nenhuma
+    credencial.
+23. A cópia é atômica: copia para `relatorio.html.tmp` na pasta de
+    destino e renomeia por cima de `relatorio.html`; cria a pasta se não
+    existir; em falha remove o `.tmp` e deixa o `relatorio.html`
+    anterior do destino intacto.
+24. Falha na cópia (ou destino ausente) **nunca altera o exit code**,
+    nunca dispara nova tentativa e nunca produz o exit `13`: vira só
+    `AVISO: falha ao copiar relatório para '<destino>': <mensagem>` (ou
+    `AVISO: relatório não copiado: ...`) no log. Sucesso registra
+    `Relatório copiado para: <caminho>`.
 
 ## Fora de escopo
 - Rotação/limpeza de logs (ver "Fora de escopo (deste script)" acima).
@@ -851,7 +1143,8 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
   ex. `S4U`/`ServiceAccount`) — decisão já tomada pelo usuário, fora de
   escopo mudar aqui.
 - Conteúdo da seção de agendamento em `README.md`/`HANDOFF.md` (fica
-  para o `doc-writer`).
+  para o `doc-writer`; inclui documentar `INDICADORES_DESTINO_RELATORIO`
+  e como abrir o HTML no celular).
 - Limpeza de temporários órfãos deixados por um encerramento forçado do
   Agendador via `ExecutionTimeLimit` (ver "Limitações conhecidas").
 - Alterar o plano de energia (despertadores na bateria, `powercfg`),
@@ -861,6 +1154,9 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
 - Mais de uma nova tentativa, backoff crescente, nova tentativa para
   outros exit codes e teto para a espera (ver "Fora de escopo (deste
   script)").
+- Verificar a sincronização com o OneDrive, nova tentativa de cópia,
+  histórico de relatórios e demais itens listados em "Fora de escopo
+  (deste script)".
 
 ## Critérios de aceite
 1. `executar_diario.ps1 --help` roda até o fim, sem tocar a rede, com
@@ -930,6 +1226,31 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
     pelo menos uma conexão recebida (prova de que a falha veio do
     proxy).
 18. `.gitignore` ignora `logs/`.
+19. Com exit final `0` ou `1` e `relatorio.html` da raiz regenerado nesta
+    execução, o wrapper copia o arquivo para a pasta de destino
+    **exatamente uma vez**, depois da última tentativa e antes do
+    rodapé; o log contém `Relatório copiado para: <caminho>`; o arquivo
+    no destino tem o mesmo conteúdo do da raiz (o da última tentativa);
+    não sobra `relatorio.html.tmp` no destino; o exit code não muda.
+20. Com exit final `2`, `3` ou `4` (e `10`–`13`), ou com `relatorio.html`
+    ausente ou **não** regenerado nesta execução (data de modificação
+    anterior ao início), nada é copiado; no segundo caso o log contém
+    `Relatório não copiado: relatorio.html não foi regenerado nesta
+    execução` (sem `AVISO`).
+21. O destino é `INDICADORES_DESTINO_RELATORIO` quando definida e não
+    vazia (prevalece sobre `OneDrive`); senão `%OneDrive%\indicadores-bcb`;
+    a pasta de destino é criada se não existir.
+22. Sem `INDICADORES_DESTINO_RELATORIO` e sem `OneDrive`: nada é copiado,
+    o log contém `AVISO: relatório não copiado: ...` e o exit code do
+    wrapper não muda.
+23. Falha ao copiar (destino inválido, arquivo de destino bloqueado)
+    registra `AVISO: falha ao copiar relatório para '<destino>': ...`,
+    não altera o exit code, não produz `13`, não dispara nova tentativa e
+    não deixa `relatorio.html.tmp` no destino; o `relatorio.html`
+    anterior do destino permanece intacto.
+24. Nenhum teste escreve no OneDrive real nem depende de variável
+    `OneDrive*` herdada do ambiente; nenhuma credencial aparece no
+    script.
 
 ## Casos de teste (pytest)
 1. `test_executar_diario_help_retorna_zero_e_grava_log` — roda o
@@ -1071,15 +1392,115 @@ arquivo confirmam a presença de `-RunOnlyIfNetworkAvailable`,
 O teste do wrapper para o exit `4` (`test_wrapper_repassa_exit_4_sem_nova_tentativa`,
 caso 57) está definido em `specs/relatorio.md` e não é duplicado aqui.
 
+**Cópia do relatório (decisão 8, 09/10/2026)** — todos Windows-only
+(`skipif`), usando a fixture `arvore_falsa` (ver "Árvore falsa do
+repositório"), sem rede, sem proxy, sem DuckDB e sem tocar o OneDrive
+real: o destino é sempre uma pasta dentro de `tmp_path`, definida por
+`INDICADORES_DESTINO_RELATORIO` (ou, nos casos 25 e 26, por `OneDrive`
+apontando para `tmp_path`). "Destino" abaixo = `<tmp_path>\destino`
+quando não houver outra indicação. Em todos, o `relatorio.html` real da
+raiz do projeto nunca é lido nem escrito.
+
+20. `test_wrapper_copia_relatorio_quando_exit_0` — `FALSO_EXITS="0"`,
+    `FALSO_GERA_RELATORIO="1"`, destino já existente; assert
+    `returncode == 0`; `<destino>\relatorio.html` existe e tem o mesmo
+    conteúdo (bytes) do `relatorio.html` da árvore falsa; não existe
+    `relatorio.html.tmp` no destino; o log contém
+    `Relatório copiado para: <destino>\relatorio.html` **uma única vez**
+    e o rodapé `exit code: 0`; a linha de cópia vem depois de
+    `--- stderr (tentativa 1) ---` e antes do rodapé; não contém
+    `AVISO` nem `"tentativa 2"`.
+21. `test_wrapper_copia_relatorio_uma_unica_vez_apos_nova_tentativa` —
+    parametrizado por `FALSO_EXITS` em `"1,1"` (exit final `1`) e `"1,0"`
+    (exit final `0`), `FALSO_GERA_RELATORIO="1"` (o falso grava o
+    relatório a cada tentativa, com marcador `tentativa=<n>`);
+    `INDICADORES_ESPERA_RETRY_SEGUNDOS=0`; assert `returncode` igual ao da
+    última tentativa; o log contém `AVISO: exit 1; nova tentativa em 0 s`
+    e `Relatório copiado para:` **exatamente uma vez**, **depois** de
+    `--- stderr (tentativa 2) ---` e antes do rodapé (prova de que não
+    copiou entre as tentativas); o arquivo copiado contém o marcador
+    `tentativa=2`; não contém `"tentativa 3"` nem `.tmp` no destino.
+22. `test_wrapper_nao_copia_relatorio_quando_exit_nao_e_0_nem_1` —
+    parametrizado por `FALSO_EXITS` em `"2"`, `"3"` e `"4"`, com
+    `FALSO_GERA_RELATORIO="1"` (o falso **grava** o relatório mesmo assim,
+    para provar que é o exit code que impede a cópia, não a ausência do
+    arquivo); assert `returncode` igual ao exit do falso; o destino não
+    contém `relatorio.html` nem `.tmp` (o destino pode nem existir); o
+    log não contém `Relatório copiado para:` nem `AVISO: falha ao copiar`
+    nem `AVISO: relatório não copiado`. Os códigos `10`–`13` não são
+    parametrizados aqui (o `10` e o `13` já são exercitados pelos casos 4
+    e 8, e a etapa não roda neles).
+23. `test_wrapper_nao_copia_relatorio_antigo` — `FALSO_EXITS="0"`,
+    `FALSO_GERA_RELATORIO="0"` (o falso não regenera nada); o teste cria
+    antes um `relatorio.html` na raiz da árvore falsa com conteúdo
+    reconhecível e data de modificação **anterior** ao início da execução
+    (`os.utime` para 1 dia atrás); parametrizável também com o arquivo
+    **ausente**; assert `returncode == 0`; o destino não recebe
+    `relatorio.html` (nem fica um já existente alterado, quando o teste
+    cria um com conteúdo diferente antes); o log contém `Relatório não
+    copiado: relatorio.html não foi regenerado nesta execução` e **não**
+    contém `AVISO`.
+24. `test_wrapper_destino_pela_variavel_prevalece_sobre_onedrive` —
+    `INDICADORES_DESTINO_RELATORIO=<tmp_path>\via_variavel` **e**
+    `OneDrive=<tmp_path>\onedrive_falso`; `FALSO_EXITS="0"`,
+    `FALSO_GERA_RELATORIO="1"`; assert `returncode == 0`;
+    `<tmp_path>\via_variavel\relatorio.html` existe (a variável é usada
+    como está, sem subpasta `indicadores-bcb`) e `<tmp_path>\onedrive_falso`
+    **não** foi criado; o log menciona o caminho de `via_variavel`.
+25. `test_wrapper_usa_onedrive_como_destino_padrao` — sem
+    `INDICADORES_DESTINO_RELATORIO` e com `OneDrive=<tmp_path>\onedrive_falso`
+    (pasta existente); `FALSO_EXITS="0"`, `FALSO_GERA_RELATORIO="1"`;
+    assert `returncode == 0` e que
+    `<tmp_path>\onedrive_falso\indicadores-bcb\relatorio.html` existe
+    (subpasta criada) com o conteúdo do relatório; a variável vazia
+    (`INDICADORES_DESTINO_RELATORIO=""`) tem o mesmo efeito (parametrizado:
+    ausente e vazia).
+26. `test_wrapper_sem_destino_registra_aviso_e_mantem_exit` —
+    parametrizado por `FALSO_EXITS` em `"0"` e `"1"`
+    (`INDICADORES_ESPERA_RETRY_SEGUNDOS=0`); `FALSO_GERA_RELATORIO="1"`;
+    **sem** `INDICADORES_DESTINO_RELATORIO` e **sem** `OneDrive` no
+    `env=`; assert `returncode` igual ao exit do falso (inalterado, nunca
+    `13`); o log contém `AVISO: relatório não copiado:` e o rodapé com o
+    exit esperado; nenhum arquivo `relatorio.html` é criado fora da árvore
+    falsa dentro de `tmp_path`.
+27. `test_wrapper_falha_na_copia_registra_aviso_mantem_exit_e_nao_deixa_tmp`
+    — `FALSO_EXITS` em `"0"` e `"1"` (parametrizado, junto com as duas
+    formas de falha abaixo), `FALSO_GERA_RELATORIO="1"`; assert
+    `returncode` igual ao exit do falso (nunca `13`, e para `"1"` sem
+    terceira tentativa: o log não contém `"tentativa 3"`); o log contém
+    `AVISO: falha ao copiar relatório para '<destino>':` seguido de uma
+    mensagem não vazia, e não contém `Relatório copiado para:`; não existe
+    `relatorio.html.tmp` em nenhum lugar de `tmp_path`. Formas de falha:
+    (a) `INDICADORES_DESTINO_RELATORIO` aponta para um **arquivo comum**
+    existente (a pasta não pode ser criada); (b) a pasta de destino
+    existe e contém um `relatorio.html` com conteúdo antigo **aberto pelo
+    próprio teste sem compartilhamento** (ex. `CreateFileW` com
+    `dwShareMode=0` via `ctypes`, ou equivalente) durante a execução do
+    wrapper, de modo que a substituição falha **depois** de o `.tmp` ter
+    sido criado; assert adicional em (b): depois de liberar o arquivo, o
+    `relatorio.html` do destino ainda tem o conteúdo antigo (intacto) e o
+    `.tmp` foi removido. **A confirmar pelo implementer:** que o bloqueio
+    de (b) de fato faz o `Move-Item`/`Replace` falhar neste Windows; se
+    não falhar, escolher outro modo de provocar uma falha após a criação
+    do `.tmp` (o objetivo é exercitar a limpeza do temporário).
+28. `test_wrapper_cria_pasta_de_destino_inexistente` —
+    `INDICADORES_DESTINO_RELATORIO=<tmp_path>\a\b\c` (nenhum nível
+    existe); `FALSO_EXITS="0"`, `FALSO_GERA_RELATORIO="1"`; assert
+    `returncode == 0` e que `<tmp_path>\a\b\c\relatorio.html` existe com o
+    conteúdo do relatório, sem `.tmp`.
+
 ## Convenções seguidas
 - Comentários e mensagens de log em português, consistente com o
   restante do projeto.
-- Nenhum teste escreve fora de `tmp_path` (via `INDICADORES_LOG_DIR` e
-  `--banco`) e nenhum teste registra tarefa real no Agendador.
+- Nenhum teste escreve fora de `tmp_path` (via `INDICADORES_LOG_DIR`,
+  `--banco`, e, nos testes da cópia, `INDICADORES_DESTINO_RELATORIO`/
+  `OneDrive` apontando para `tmp_path`) e nenhum teste registra tarefa
+  real no Agendador.
 - Exit codes do wrapper (`0`–`4`) espelham exatamente os já definidos
   em `specs/pipeline.md`; códigos de infraestrutura do wrapper
   (`≥ 10`) são uma faixa nova, deliberadamente sem sobreposição.
 - Scripts PowerShell ficam em `scripts/`, paralelos a `src/` e `tests/`,
   já que não fazem parte do pacote Python `indicadores`.
-- Variáveis de ambiente do wrapper com prefixo `INDICADORES_`, só para
-  uso em testes.
+- Variáveis de ambiente do wrapper com prefixo `INDICADORES_`; as de log
+  e de espera são só para uso em testes, e `INDICADORES_DESTINO_RELATORIO`
+  é configuração de uso real (decisão 8).

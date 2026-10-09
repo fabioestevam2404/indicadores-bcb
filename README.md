@@ -162,6 +162,7 @@ A tarefa agendada `indicadores-bcb diario` executa automaticamente de segunda a 
 - **Espera a rede**: não inicia até a rede estar disponível (`-RunOnlyIfNetworkAvailable`).
 - **Nova tentativa automática**: se a execução terminar com exit 1 (série falhada), espera 5 minutos (padrão, configurável via `INDICADORES_ESPERA_RETRY_SEGUNDOS`) e tenta uma única vez de novo. Seguro por upsert.
 - **Limite de execução**: 60 minutos por tentativa.
+- **Copia o relatório**: ao final, copia `relatorio.html` para a pasta de destino, para ver no celular pelo OneDrive (ver abaixo).
 
 O log mostra cada tentativa com o rótulo `(tentativa N)`.
 
@@ -236,6 +237,45 @@ INFO indicadores.pipeline: executar iniciado
 | 11 | Falha ao iniciar o Python |
 | 12 | Falha ao preparar o log (criar diretório ou gravar cabeçalho); mensagem vai para stderr |
 | 13 | Erro inesperado no wrapper depois que o log foi preparado |
+
+### Cópia do relatório para o celular
+
+Ao final da execução agendada (e também de uma execução manual do `scripts\executar_diario.ps1`), o wrapper copia o `relatorio.html` para uma pasta de destino, para que o arquivo possa ser aberto no celular pelo OneDrive. Só o wrapper faz a cópia; `python -m indicadores` chamado diretamente não copia.
+
+**Quando copia.** Uma vez, depois da última tentativa e antes do rodapé do log, e somente se:
+- o exit final é `0` ou `1`. Os exit codes `2`, `3`, `4` e `10`–`13` não copiam;
+- o `relatorio.html` da raiz do projeto foi regenerado nessa execução. Um arquivo de execução anterior nunca é copiado.
+
+**Destino.**
+- Padrão: `%OneDrive%\indicadores-bcb\relatorio.html`, ou seja, a pasta `indicadores-bcb` dentro da pasta do OneDrive. A pasta é criada se não existir.
+- Para trocar, defina a variável de ambiente `INDICADORES_DESTINO_RELATORIO` com um **caminho absoluto**. A pasta é usada exatamente como informada: o `indicadores-bcb` não é acrescentado. Se a variável estiver definida e não vazia, ela tem prioridade sobre o OneDrive; se a cópia para ela falhar, não há fallback para o OneDrive. Caminho relativo não é copiado (vira `AVISO`, ver abaixo).
+
+Exemplo, no PowerShell (grava a variável no perfil do usuário):
+
+```powershell
+[Environment]::SetEnvironmentVariable('INDICADORES_DESTINO_RELATORIO', 'C:\Users\SeuUsuario\OneDrive\indicadores-bcb', 'User')
+```
+
+Depois de definir, confira no log da execução seguinte se a cópia foi para o caminho esperado. Não verificado se o processo iniciado pelo Agendador enxerga uma variável criada há pouco; se o `AVISO` de destino não definido continuar aparecendo, pode ser preciso fazer logoff e logon e conferir de novo.
+
+**Log.** A etapa grava uma destas linhas, sempre antes do rodapé:
+- `Relatório copiado para: <caminho>`: cópia feita com sucesso.
+- `Relatório não copiado: relatorio.html não foi regenerado nesta execução`: informativa, sem `AVISO`.
+- `AVISO: relatório não copiado: ...`: não há destino (variável não definida e `OneDrive` ausente), ou a variável tem caminho relativo.
+- `AVISO: falha ao copiar relatório para '<pasta>': <mensagem>`: a cópia falhou (por exemplo, a pasta não pôde ser criada, ou o `relatorio.html` do destino estava aberto em outro programa).
+
+**Falha na cópia não muda o resultado.** Qualquer falha da cópia aparece só como `AVISO` no log. O exit code continua o do pipeline (`0` ou `1`), não há nova tentativa, e a próxima execução diária tenta copiar de novo. Em caso de falha, o arquivo temporário `relatorio.html.tmp` na pasta de destino é removido.
+
+**Abrir no celular.**
+1. No app do OneDrive, abra a pasta `indicadores-bcb` (ou a pasta definida em `INDICADORES_DESTINO_RELATORIO`).
+2. Toque em `relatorio.html`.
+3. Se o app mostrar o HTML como texto ou só oferecer o download, use "Abrir em…" (ou "Abrir no navegador") e escolha um navegador.
+
+Observações:
+- "Copiado" quer dizer que o arquivo está na pasta local do PC. O envio para o celular depende de o OneDrive estar sincronizando; enquanto isso não acontecer, o celular mostra o relatório anterior.
+- A data de geração aparece dentro do próprio relatório ("Gerado em"), e mostra qual relatório está sendo visto.
+- Os gráficos usam JavaScript para o tooltip. Esse tooltip depende do navegador e de a visualização permitir scripts; sem isso, o relatório continua legível, só sem o tooltip.
+- Este fluxo ainda não foi testado em um celular real.
 
 ### Conferir status
 

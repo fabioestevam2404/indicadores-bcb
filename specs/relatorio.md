@@ -766,6 +766,12 @@ fluxo normal — implementer / test-writer / doc-writer):
   `monkeypatch.chdir(tmp_path)`, para que um esquecimento nunca escreva
   `relatorio.html` na raiz do repositório. Os testes `--help` não mudam.
 - `README.md`: documentar flags, `relatorio.html` e exit `4` (doc-writer).
+- **Cópia para pasta sincronizada (09/10/2026):** `specs/agendamento.md`
+  (decisão 8) passa a copiar `relatorio.html` para uma pasta de destino
+  (padrão `%OneDrive%\indicadores-bcb`) ao fim do wrapper, quando o exit é
+  `0` ou `1` e o arquivo foi regenerado na execução. Esta spec e o
+  `__main__` não mudam; as afirmações de que `executar_diario.ps1` não muda
+  referem-se só ao exit `4`.
 
 ## Regras de negócio
 1. `gerar_html` é pura: mesma entrada (`dados` em qualquer ordem e

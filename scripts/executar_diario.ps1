@@ -152,8 +152,69 @@ function Invoke-Pipeline {
     }
 }
 
+function Copy-RelatorioParaDestino {
+    <#
+        Etapa final (decisao 8): copia relatorio.html da raiz para a pasta
+        de destino quando foi regenerado nesta execucao. Grava suas
+        proprias linhas no log. Chamada so com exit final 0 ou 1; tem
+        try/catch proprio e nunca propaga excecao (nunca altera o exit
+        code nem vira 13).
+    #>
+    $destino = $null
+    $tmpDestino = $null
+    try {
+        $origem = Join-Path $repoRoot "relatorio.html"
+        $regenerado = $false
+        if (Test-Path -Path $origem -PathType Leaf) {
+            $regenerado = ((Get-Item -Path $origem).LastWriteTimeUtc -ge $inicioExecucaoUtc)
+        }
+        if (-not $regenerado) {
+            Write-Log "Relatório não copiado: relatorio.html não foi regenerado nesta execução`r`n"
+            return
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($env:INDICADORES_DESTINO_RELATORIO)) {
+            $destino = $env:INDICADORES_DESTINO_RELATORIO
+            if (-not [System.IO.Path]::IsPathRooted($destino)) {
+                Write-Log "AVISO: relatório não copiado: INDICADORES_DESTINO_RELATORIO deve ser caminho absoluto ('$destino')`r`n"
+                return
+            }
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:OneDrive)) {
+            $destino = Join-Path $env:OneDrive "indicadores-bcb"
+        } else {
+            Write-Log "AVISO: relatório não copiado: INDICADORES_DESTINO_RELATORIO não está definida e a variável OneDrive não existe`r`n"
+            return
+        }
+
+        $arquivoFinal = Join-Path $destino "relatorio.html"
+        $tmpDestino = Join-Path $destino "relatorio.html.tmp"
+        New-Item -ItemType Directory -Force -Path $destino | Out-Null
+        Copy-Item -Path $origem -Destination $tmpDestino -Force
+        if (Test-Path -Path $arquivoFinal -PathType Leaf) {
+            # [NullString]::Value: no PS 5.1 um $null puro vira "" e o
+            # Replace rejeita o caminho de backup vazio.
+            [System.IO.File]::Replace($tmpDestino, $arquivoFinal, [NullString]::Value)
+        } else {
+            [System.IO.File]::Move($tmpDestino, $arquivoFinal)
+        }
+        Write-Log "Relatório copiado para: $arquivoFinal`r`n"
+    } catch {
+        $mensagemCopia = $_.Exception.Message
+        if ($tmpDestino) {
+            try { Remove-Item -Path $tmpDestino -Force -ErrorAction Stop } catch { }
+        }
+        try {
+            Write-Log "AVISO: falha ao copiar relatório para '$destino': $mensagemCopia`r`n"
+        } catch { }
+    }
+}
+
 $repoRoot  = Split-Path -Parent $PSScriptRoot
 $pythonExe = Join-Path $repoRoot ".venv\Scripts\python.exe"
+
+# Instante de inicio da execucao (UTC), antes do preparo do log: so um
+# relatorio.html com LastWriteTimeUtc >= este valor foi regenerado agora.
+$inicioExecucaoUtc = [datetime]::UtcNow
 
 $logDir = if ($env:INDICADORES_LOG_DIR) { $env:INDICADORES_LOG_DIR } else { Join-Path $repoRoot "logs" }
 
@@ -224,6 +285,12 @@ try {
         Write-Log "AVISO: exit 1; nova tentativa em $esperaRetrySegundos s`r`n"
         Start-Sleep -Seconds $esperaRetrySegundos
         $exitFinal = Invoke-Pipeline -Tentativa 2
+    }
+
+    # Copia do relatorio: uma unica vez, depois da ultima tentativa e antes
+    # do rodape; so com exit final 0 ou 1. A funcao nunca lanca excecao.
+    if ($exitFinal -eq 0 -or $exitFinal -eq 1) {
+        Copy-RelatorioParaDestino
     }
 
     $fim = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
