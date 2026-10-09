@@ -1,7 +1,7 @@
 <#
     Registra (sem -Remover) ou remove (-Remover) a tarefa
     "indicadores-bcb diario" no Agendador de Tarefas do Windows, para
-    rodar `python -m indicadores` todo dia util as 19:00, com o usuario
+    rodar `python -m indicadores` todo dia util as 16:00, com o usuario
     logado.
 
     Idempotente: rodar de novo so atualiza a tarefa existente
@@ -36,7 +36,7 @@ $acao = New-ScheduledTaskAction -Execute "powershell.exe" -Argument (
 
 $gatilho = New-ScheduledTaskTrigger -Weekly `
     -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday `
-    -At (Get-Date -Hour 19 -Minute 0 -Second 0)
+    -At (Get-Date -Hour 16 -Minute 0 -Second 0)
 
 $configuracoes = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `

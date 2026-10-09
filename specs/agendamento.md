@@ -11,7 +11,7 @@ I/O): exit codes `0` (sucesso total), `1` (alguma série ignorada), `2`
 sempre em stdout, logs sempre em stderr.
 
 ## Objetivo
-Rodar `python -m indicadores` automaticamente, todo dia útil às 19:00,
+Rodar `python -m indicadores` automaticamente, todo dia útil às 16:00,
 com o usuário logado, registrando cada execução (comando, saída, exit
 code, horário) em um log mensal legível, sem exigir que ninguém abra um
 terminal manualmente.
@@ -25,7 +25,8 @@ execução **uma única vez** depois de uma espera — ver "Nova tentativa
 quando o pipeline termina com exit 1".
 
 ## Decisões já tomadas pelo usuário (não reabertas)
-1. A tarefa roda às **19:00, de segunda a sexta**.
+1. A tarefa roda às **16:00, de segunda a sexta** (era 19:00 até
+   08/10/2026; ver decisão 7).
 2. Roda **só com o usuário logado** (`LogonType Interactive`, sem pedir
    senha), com `StartWhenAvailable`: se o PC estava desligado no
    horário, a tarefa roda assim que possível após o logon.
@@ -43,6 +44,15 @@ quando o pipeline termina com exit 1".
    horário — com as condições do notebook do usuário registradas em
    `agendar_tarefa.ps1` (Modern Standby; despertadores só na tomada).
 6. O `ExecutionTimeLimit` da tarefa é de **60 minutos** (era 30).
+7. O horário passou de **19:00 para 16:00** (decisão de 08/10/2026).
+   Motivo: nesse dia o notebook estava em espera (Modern Standby) às
+   19:00; o `-WakeToRun` não acordou o PC (só funciona na tomada); a
+   tarefa rodou atrasada, às 20:58, quando o PC acordou, e foi
+   interrompida com `0xC000013A` (`STATUS_CONTROL_C_EXIT`) antes de
+   escrever o log. Às 16:00 o PC costuma estar ligado e em uso, o que
+   evita depender do despertar. O BCB já publica a PTAX do dia por volta
+   das 13h, então 16:00 continua capturando o dado do dia. O
+   `-WakeToRun` e as demais configurações permanecem como estão.
 
 ## Localização
 ```
@@ -481,28 +491,41 @@ timeout de leitura reinicia a cada pedaço recebido): nesse caso o
   wrapper (o encerramento é externo, pelo sistema operacional/Agendador,
   não algo que um `finally` dentro do próprio processo consiga
   interceptar).
-- **Parcialmente resolvido: PC suspenso às 19h; não resolvido: PC
-  desligado ou hibernado.** Com `-WakeToRun`, a tarefa pede ao Windows
-  que acorde o PC da suspensão no horário — mas, no notebook do usuário
-  (Modern Standby, despertadores ativados só na tomada, plano
+- **Parcialmente resolvido: PC suspenso no horário da tarefa (antes
+  19:00, agora 16:00); não resolvido: PC desligado ou hibernado.**
+  Histórico: com o horário original de 19:00, a tarefa dependia do
+  `-WakeToRun` para acordar o PC da suspensão — mas, no notebook do
+  usuário (Modern Standby, despertadores ativados só na tomada, plano
   "Equilibrado"), isso só acontece **na tomada**; na bateria a tarefa
   não acorda o PC e roda só depois que ele for retomado (via
   `StartWhenAvailable`, que no acompanhamento real disparou a tarefa
-  logo depois de o PC acordar). Com o PC **desligado ou hibernado**,
-  nada acontece: a execução do dia só ocorre depois que o PC ligar e o
-  usuário estiver logado (`Interactive`), ou não ocorre naquele dia. Não
-  há perda de dados permanente: cada execução rebusca os últimos 5 anos
-  e faz upsert, então a execução seguinte recupera o que faltou. **Não
-  verificado:** o que o PC faz **durante** a execução depois de acordar
-  por um despertador — em Modern Standby ele pode voltar a suspender
-  durante a espera de 300 s da nova tentativa; a confirmar em uso real,
-  com o histórico do Agendador ativado.
+  logo depois de o PC acordar). Isso se confirmou em **08/10/2026**: o
+  notebook estava em espera às 19:00, o `-WakeToRun` não acordou o PC, a
+  tarefa rodou atrasada às 20:58, ao acordar, e foi interrompida com
+  `0xC000013A` antes de escrever o log (ver também "tarefa encerrada no
+  logoff ou no desligamento", abaixo). **Mitigação adotada:** o horário
+  foi movido para **16:00** (decisão 7), faixa em que o PC costuma estar
+  ligado e em uso, reduzindo a dependência do despertar; o `-WakeToRun`
+  continua configurado, como reforço. A mitigação **reduz** o risco, mas
+  não o elimina: se o PC estiver suspenso às 16:00 (e na bateria), o
+  comportamento descrito acima se repete. Com o PC **desligado ou
+  hibernado**, nada acontece: a execução do dia só ocorre depois que o
+  PC ligar e o usuário estiver logado (`Interactive`), ou não ocorre
+  naquele dia. Não há perda de dados permanente: cada execução rebusca
+  os últimos 5 anos e faz upsert, então a execução seguinte recupera o
+  que faltou. **Não verificado:** o que o PC faz **durante** a execução
+  depois de acordar por um despertador — em Modern Standby ele pode
+  voltar a suspender durante a espera de 300 s da nova tentativa; a
+  confirmar em uso real, com o histórico do Agendador ativado. **Não
+  verificado:** se 16:00 é de fato estável em uso real; a confirmar
+  observando os logs das próximas semanas.
 - **Não resolvido: tarefa encerrada no logoff ou no desligamento.**
   Como a tarefa roda no contexto do usuário logado (`Interactive`),
   fazer logoff ou desligar o PC durante a execução encerra o processo; o
   Agendador registra então o resultado `0xC000013A`
   (`STATUS_CONTROL_C_EXIT`, interrupção por evento de console),
-  **observado em 07/10/2026**. A espera de 300 s da nova tentativa
+  **observado em 07/10/2026** (e de novo em **08/10/2026**, na execução
+  atrasada das 20:58). A espera de 300 s da nova tentativa
   aumenta a janela em que isso pode acontecer. Efeitos: o bloco do log
   fica sem rodapé ("fim"); a tentativa 1 já está gravada no log (ela é
   escrita antes da espera); os temporários podem ficar para trás (mesma
@@ -587,19 +610,20 @@ param(
     instante** antes de ser ocultada — comportamento conhecido e aceito
     do Agendador de Tarefas nesse modo, não um bug deste script.
 - **Gatilho:** semanal, `DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday`,
-  às 19:00, construído como
+  às 16:00, construído como
   `New-ScheduledTaskTrigger -Weekly -DaysOfWeek ... -At (Get-Date -Hour
-  19 -Minute 0 -Second 0)`. Decisão registrada: usa um objeto
-  `DateTime` montado com `Get-Date -Hour 19 -Minute 0 -Second 0`, **não**
-  a string literal `"19:00"`. Motivo: `-At` aceita tanto `DateTime`
+  16 -Minute 0 -Second 0)`. Decisão registrada: usa um objeto
+  `DateTime` montado com `Get-Date -Hour 16 -Minute 0 -Second 0`, **não**
+  a string literal `"16:00"`. Motivo: `-At` aceita tanto `DateTime`
   quanto string, mas quando recebe uma string o PowerShell precisa
   interpretá-la como hora usando as configurações de **cultura/locale**
   do Windows configuradas na máquina (formato de hora 12h/24h,
-  separador, etc.) — em uma cultura diferente da esperada, `"19:00"`
-  poderia ser interpretada de forma diferente da intenção (19h). Um
-  `DateTime` construído explicitamente por componentes (`-Hour 19
+  separador, etc.) — em uma cultura diferente da esperada, `"16:00"`
+  poderia ser interpretada de forma diferente da intenção (16h). Um
+  `DateTime` construído explicitamente por componentes (`-Hour 16
   -Minute 0 -Second 0`) não depende de nenhuma interpretação de string
-  sensível a cultura.
+  sensível a cultura. (O horário era 19:00 até 08/10/2026; a mudança
+  para 16:00 não altera este raciocínio — ver decisão 7.)
 - **Configurações** (`New-ScheduledTaskSettingsSet`):
   - `-StartWhenAvailable` (roda assim que possível se o horário foi
     perdido com o PC desligado).

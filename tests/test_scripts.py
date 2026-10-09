@@ -10,6 +10,7 @@ nunca executado.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -534,6 +535,14 @@ def test_agendar_tarefa_limite_de_execucao_60_minutos():
     assert "-ExecutionTimeLimit" in texto
     assert "-Minutes 60" in texto
     assert "-Minutes 30" not in texto
+
+
+def test_agendar_tarefa_gatilho_as_16h():
+    texto = _texto_agendar_tarefa()
+    assert "-At (Get-Date -Hour 16 -Minute 0 -Second 0)" in texto
+    # DateTime por componentes: nenhuma string literal de horário em -At.
+    assert not re.search(r"""-At\s+["'][^"']*["']""", texto)
+    assert '-At "16:00"' not in texto
 
 
 # ---------------------------------------------------------------------------

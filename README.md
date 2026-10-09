@@ -116,7 +116,7 @@ Os logs são emitidos em stderr no formato `NIVEL logger: mensagem`.
 
 ## Agendamento diário (Windows)
 
-A tarefa agendada `indicadores-bcb diario` executa automaticamente de segunda a sexta às 19:00, com o usuário logado.
+A tarefa agendada `indicadores-bcb diario` executa automaticamente de segunda a sexta às 16:00, com o usuário logado.
 
 ### O que a tarefa faz
 
@@ -164,7 +164,7 @@ As execuções são registradas em `logs/execucao_AAAA-MM.log` (um arquivo por m
 Exemplo de conteúdo com nova tentativa:
 
 ```
-===== 2026-10-07 19:00:15 - início =====
+===== 2026-10-07 16:00:15 - início =====
 
 --- stdout (tentativa 1) ---
 Séries gravadas:
@@ -186,7 +186,7 @@ Séries gravadas:
 INFO indicadores.pipeline: executar iniciado
 ...
 
-===== 2026-10-07 19:05:35 - fim (exit code: 0) =====
+===== 2026-10-07 16:05:35 - fim (exit code: 0) =====
 ```
 
 ### Exit codes do wrapper
